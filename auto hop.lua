@@ -6,11 +6,26 @@
     الحالة بتتحفظ في ملف عشان تكمل بعد كل Teleport (حطه في فولدر autoexec)
 ]]
 
+-- الحارس بقى لكل سيرفر (JobId) عشان ما يمنعش التشغيل بعد الـ Teleport
 if getgenv then
-    if getgenv().BTH_LOADED then return end
-    getgenv().BTH_LOADED = true
+    if getgenv().BTH_JOB == game.JobId then return end
+    getgenv().BTH_JOB = game.JobId
 end
 if not game:IsLoaded() then game.Loaded:Wait() end
+
+-- احتياطي: لو الـ autoexec مش شغال، يعيد تشغيل نفسه بعد كل Teleport
+-- (لازم تحط نفس الملف في فولدر workspace باسم auto hop.lua)
+pcall(function()
+    local q = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+    if q then
+        q([[pcall(function() if isfile and isfile("auto hop.lua") then loadstring(readfile("auto hop.lua"))() end end)]])
+    end
+end)
+
+pcall(function()
+    local old = (gethui and gethui() or game:GetService("CoreGui")):FindFirstChild("BTH_GUI")
+    if old then old:Destroy() end
+end)
 
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
