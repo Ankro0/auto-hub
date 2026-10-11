@@ -28,6 +28,15 @@ if selectedSize ~= "Small" and selectedSize ~= "Medium" and selectedSize ~= "Lar
     selectedSize = "Small"
 end
 
+-- Server IDs carried over from the previous server (saves a web request per hop)
+local serverCache = {}
+if type(_G.__LightningServers) == "table" then
+    for _, id in ipairs(_G.__LightningServers) do
+        if type(id) == "string" then table.insert(serverCache, id) end
+    end
+end
+_G.__LightningServers = nil
+
 -- Clean old GUI
 local old = playerGui:FindFirstChild("LightningTreeHop")
 if old then old:Destroy() end
@@ -175,13 +184,29 @@ for name, b in pairs(SizeButtons) do
 end
 refreshSizeButtons()
 
--- Queue the script to run again after teleport (once, with the chosen size)
+-- Queue the script to run again after teleport, passing along the remaining servers
 local queued = false
-local function queueOnce()
-    if queued or not queueTeleport then return end
+local function queueNow(remaining)
+    if not queueTeleport then return end
+    if queued then
+        if clear_teleport_queue then
+            pcall(clear_teleport_queue)
+        else
+            return
+        end
+    end
     queued = true
-    local code = "task.wait(1) _G.__LightningAutoStart = true _G.__LightningSize = '" .. selectedSize
-        .. "' pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
+
+    local parts = {}
+    for i = 1, math.min(#remaining, 60) do
+        local clean = tostring(remaining[i]):gsub("[^%w%-]", "")
+        parts[#parts + 1] = "'" .. clean .. "'"
+    end
+    local list = "{" .. table.concat(parts, ",") .. "}"
+
+    local code = "task.wait(0.5) _G.__LightningAutoStart = true _G.__LightningSize = '" .. selectedSize
+        .. "' _G.__LightningServers = " .. list
+        .. " pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
     pcall(function() queueTeleport(code) end)
 end
 
@@ -249,59 +274,61 @@ local function serverHop()
     CountLabel.Text = "Servers: " .. hopCount
     StatusLabel.Text = "Hopping to server #" .. hopCount
 
-    if not requestFunc then
-        StatusLabel.Text = "Error: no request function in your executor"
-        running = false
-        updateButton(false)
-        return false
-    end
+    while alive() do
+        -- Only fetch a new list when the cached one is empty
+        if #serverCache == 0 then
+            if not requestFunc then
+                StatusLabel.Text = "Error: no request function in your executor"
+                running = false
+                updateButton(false)
+                return false
+            end
 
-    local servers, err = fetchServers()
-    if not servers then
-        StatusLabel.Text = "Fetch failed (" .. tostring(err) .. ") - retrying"
-        -- Longer wait on rate limit
-        task.wait((err == "HTTP 429") and 8 or 3)
-        return false
-    end
+            StatusLabel.Text = "Fetching server list..."
+            local servers, err = fetchServers()
+            if not servers then
+                StatusLabel.Text = "Fetch failed (" .. tostring(err) .. ") - retrying"
+                task.wait((err == "HTTP 429") and 6 or 1)
+                return false
+            end
 
-    shuffle(servers)
+            shuffle(servers)
+            for _, s in ipairs(servers) do
+                if s.id and s.id ~= game.JobId and s.playing and s.maxPlayers and s.playing < s.maxPlayers then
+                    table.insert(serverCache, s.id)
+                end
+            end
 
-    queueOnce()
-    local tried = false
-    for _, s in ipairs(servers) do
-        if not alive() then return false end
-        if s.id and not visited[s.id] and s.playing and s.maxPlayers and s.playing < s.maxPlayers then
-            tried = true
-            visited[s.id] = true
+            if #serverCache == 0 then
+                task.wait(1.5)
+                return false
+            end
+        end
+
+        local id = table.remove(serverCache)
+        if id ~= game.JobId then
             teleportFailed = false
+            queueNow(serverCache)
 
             local ok = pcall(function()
-                TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, player)
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, id, player)
             end)
 
             if ok then
-                -- Wait up to 12s for the teleport to either happen or fail
+                -- Wait up to 10s for the teleport to either happen or fail
                 local t = 0
-                while t < 12 and not teleportFailed and alive() do
-                    task.wait(0.5)
-                    t = t + 0.5
+                while t < 10 and not teleportFailed and alive() do
+                    task.wait(0.1)
+                    t = t + 0.1
                 end
                 if not teleportFailed then
                     return true
                 end
-                StatusLabel.Text = "Teleport failed - trying another server"
-                task.wait(1)
+                StatusLabel.Text = "Teleport failed - next server"
             end
         end
     end
 
-    -- Visited everything we saw: reset the list and try again
-    if not tried then
-        visited = {}
-        visited[game.JobId] = true
-    end
-
-    task.wait(1.5)
     return false
 end
 
@@ -311,7 +338,7 @@ local function waitForWorld()
     local root = character:WaitForChild("HumanoidRootPart", 15)
     if not root then return false end
     workspace:WaitForChild("TreeRegion", 10)
-    task.wait(1.5) -- give the trees a moment to load
+    task.wait(0.3) -- tiny delay so the trees can load
     return true
 end
 
@@ -364,7 +391,7 @@ local function startLoop()
                 if not alive() then break end
                 serverHop()
             end
-            task.wait(0.2)
+            task.wait()
         end
     end)
 end
