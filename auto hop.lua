@@ -24,7 +24,7 @@ _G.__LightningToken = myToken
 -- Selected tree size (kept across teleports)
 local selectedSize = _G.__LightningSize
 _G.__LightningSize = nil
-if selectedSize ~= "Small" and selectedSize ~= "Medium" and selectedSize ~= "Large" then
+if selectedSize ~= "Small" and selectedSize ~= "Medium" and selectedSize ~= "Large" and selectedSize ~= "All" then
     selectedSize = "Small"
 end
 
@@ -95,14 +95,14 @@ ToggleButton.Parent = MainFrame
 Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 8)
 
 local SizeButtons = {}
-for i, name in ipairs({"Small", "Medium", "Large"}) do
+for i, name in ipairs({"Small", "Medium", "Large", "All"}) do
     local b = Instance.new("TextButton")
     b.Name = "Size_" .. name
-    b.Size = UDim2.new(0, 88, 0, 30)
-    b.Position = UDim2.new(0, 12 + (i - 1) * 94, 0, 146)
+    b.Size = UDim2.new(0, 63, 0, 30)
+    b.Position = UDim2.new(0, 12 + (i - 1) * 71, 0, 146)
     b.BackgroundColor3 = Color3.fromRGB(40, 40, 58)
     b.TextColor3 = Color3.fromRGB(255, 255, 255)
-    b.TextSize = 12
+    b.TextSize = 11
     b.Font = Enum.Font.GothamBold
     b.Text = name
     b.Parent = MainFrame
@@ -151,6 +151,7 @@ local function sectionCount(model)
 end
 
 local function sizeMatches(obj)
+    if selectedSize == "All" then return true end
     local n = sectionCount(obj.Parent)
     if selectedSize == "Small" then
         return n <= SMALL_MAX
