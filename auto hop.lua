@@ -1,7 +1,4 @@
-﻿-- ═══════════════════════════════════════════════════════
--- ⚡ Lightning Auto-Hop v8 (No Files - Full Auto)
--- ═══════════════════════════════════════════════════════
-
+﻿-- Lightning Auto-Hop v9 (English Only - No Files)
 local SCRIPT_URL = "https://raw.githubusercontent.com/Ankro0/auto-hub/refs/heads/main/auto%20hop.lua"
 
 local Players = game:GetService("Players")
@@ -12,47 +9,32 @@ local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ═══ كشف دوال الاكسبلوتر ═══
 local requestFunc = (syn and syn.request) or (http and http.request) or http_request or request
 local queueTeleport = (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or queue_on_teleport
 
--- ═══ هل جاي من انتقال سابق؟ (Auto-Start Flag) ═══
+-- Auto-Start flag
 local AUTO_START = _G.__LightningAutoStart == true
-_G.__LightningAutoStart = nil -- نظّف العلامة
+_G.__LightningAutoStart = nil
 
--- ═══ إعداد الأوتو إكسكيوت ═══
-local function setupAutoExecute()
-    if not queueTeleport then return false end
-    
-    -- نخبر السكربت الجديد إنه يبدأ تلقائي
-    local code = ([[
-        _G.__LightningAutoStart = true
-        task.wait(1)
-        pcall(function()
-            loadstring(game:HttpGet("%s", true))()
-        end)
-    ]]):format(SCRIPT_URL)
-    
+-- Setup auto-execute
+if queueTeleport then
+    local code = "task.wait(1) _G.__LightningAutoStart = true pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
     pcall(function() queueTeleport(code) end)
-    return true
 end
 
-setupAutoExecute()
-
--- ═══ حذف الواجهة القديمة ═══
+-- Clean old GUI
 if playerGui:FindFirstChild("LightningTreeHop") then
     playerGui.LightningTreeHop:Destroy()
 end
 
--- ═══ GUI ═══
+-- GUI
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "LightningTreeHop"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = playerGui
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 300, 0, 230)
+MainFrame.Size = UDim2.new(0, 300, 0, 220)
 MainFrame.Position = UDim2.new(0.05, 0, 0.2, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
 MainFrame.BorderSizePixel = 0
@@ -68,7 +50,7 @@ Stroke.Thickness = 1.5
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 35)
 Title.BackgroundTransparency = 1
-Title.Text = "⚡ Lightning Auto-Hop v8"
+Title.Text = "Lightning Auto-Hop v9"
 Title.TextColor3 = Color3.fromRGB(0, 255, 170)
 Title.TextSize = 13
 Title.Font = Enum.Font.GothamBold
@@ -81,7 +63,7 @@ StatusLabel.BackgroundColor3 = Color3.fromRGB(28, 28, 40)
 StatusLabel.TextColor3 = Color3.fromRGB(210, 210, 225)
 StatusLabel.TextSize = 11
 StatusLabel.Font = Enum.Font.GothamMedium
-StatusLabel.Text = "الحالة: جاهز — اضغط START مرة واحدة"
+StatusLabel.Text = "Ready - Press START once"
 StatusLabel.TextWrapped = true
 StatusLabel.Parent = MainFrame
 Instance.new("UICorner", StatusLabel).CornerRadius = UDim.new(0, 8)
@@ -94,7 +76,7 @@ ToggleButton.BackgroundColor3 = Color3.fromRGB(0, 190, 110)
 ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 ToggleButton.TextSize = 15
 ToggleButton.Font = Enum.Font.GothamBold
-ToggleButton.Text = "▶ START (مرة واحدة)"
+ToggleButton.Text = "START"
 ToggleButton.Parent = MainFrame
 Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 8)
 
@@ -102,7 +84,7 @@ local CountLabel = Instance.new("TextLabel")
 CountLabel.Size = UDim2.new(1, -24, 0, 25)
 CountLabel.Position = UDim2.new(0, 12, 0, 145)
 CountLabel.BackgroundTransparency = 1
-CountLabel.Text = "السيرفرات: 0"
+CountLabel.Text = "Servers: 0"
 CountLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
 CountLabel.TextSize = 11
 CountLabel.Font = Enum.Font.Gotham
@@ -118,41 +100,38 @@ Credit.TextSize = 10
 Credit.Font = Enum.Font.Gotham
 Credit.Parent = MainFrame
 
--- ═══ المتغيرات ═══
+-- Variables
 local running = false
 local hopping = false
 local hopCount = 0
 
--- ═══ تحديث الزر ═══
 local function updateButton(isRunning)
     if isRunning then
-        ToggleButton.Text = "⏹ إيقاف (STOP)"
+        ToggleButton.Text = "STOP"
         ToggleButton.BackgroundColor3 = Color3.fromRGB(230, 60, 60)
     else
-        ToggleButton.Text = "▶ START (مرة واحدة)"
+        ToggleButton.Text = "START"
         ToggleButton.BackgroundColor3 = Color3.fromRGB(0, 190, 110)
     end
 end
 
--- ═══ الهوب ═══
 local function serverHop()
     if hopping then return end
     hopping = true
     
     hopCount = hopCount + 1
-    CountLabel.Text = "السيرفرات: " .. hopCount
-    StatusLabel.Text = "🚀 انتقال لسيرفر #" .. hopCount
+    CountLabel.Text = "Servers: " .. hopCount
+    StatusLabel.Text = "Hopping to server #" .. hopCount
 
     if not requestFunc then
-        StatusLabel.Text = "❌ الاكسبلوتر مايدعم request"
+        StatusLabel.Text = "Error: no request function"
         hopping = false
         return
     end
 
     local success, servers = pcall(function()
-        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId
-            .. "/servers/Public?sortOrder=Asc&limit=100"
-        local res = requestFunc({ Url = url, Method = "GET" })
+        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+        local res = requestFunc({Url = url, Method = "GET"})
         return HttpService:JSONDecode(res.Body).data
     end)
 
@@ -172,7 +151,6 @@ local function serverHop()
     if running then serverHop() end
 end
 
--- ═══ البحث عن الشجرة ═══
 local function fastScan()
     local character = player.Character
     if not character then return false end
@@ -185,11 +163,9 @@ local function fastScan()
         if obj.Name == "WoodSection" and obj:IsA("BasePart") then
             local bc = obj.BrickColor
             local c3 = obj.Color
-            local isReallyBlack = (bc and bc.Name == "Really black")
-                or (c3 and c3.R < 0.05 and c3.G < 0.05 and c3.B < 0.05)
-
+            local isReallyBlack = (bc and bc.Name == "Really black") or (c3 and c3.R < 0.05 and c3.G < 0.05 and c3.B < 0.05)
             if isReallyBlack then
-                StatusLabel.Text = "🎯 لقيت الشجرة السوداء!"
+                StatusLabel.Text = "Found the tree!"
                 rootPart.CFrame = obj.CFrame + Vector3.new(0, 3, 0)
                 return true
             end
@@ -198,22 +174,20 @@ local function fastScan()
     return false
 end
 
--- ═══ الحلقة الرئيسية ═══
 local function startLoop()
     if running then return end
     running = true
     updateButton(true)
     
     task.spawn(function()
-        task.wait(2) -- انتظر اللعبة تحمّل
-        
+        task.wait(2)
         while running do
-            StatusLabel.Text = "⚡ فحص #" .. hopCount .. " — بيدور على الشجرة..."
+            StatusLabel.Text = "Scanning #" .. hopCount
             
             if fastScan() then
                 running = false
                 updateButton(false)
-                StatusLabel.Text = "✅ تم! لقيت الشجرة"
+                StatusLabel.Text = "Done! Found the tree"
                 break
             else
                 if running then
@@ -227,22 +201,20 @@ local function startLoop()
     end)
 end
 
--- ═══ الزر ═══
 ToggleButton.MouseButton1Click:Connect(function()
     if running then
         running = false
         updateButton(false)
-        StatusLabel.Text = "متوقف"
+        StatusLabel.Text = "Stopped"
     else
         startLoop()
     end
 end)
 
--- ═══ التشغيل التلقائي (لو جاي من انتقال) ═══
 if AUTO_START then
-    print("[Lightning] 🔄 رجع من انتقال — بدء تلقائي")
-    StatusLabel.Text = "🔄 رجع من انتقال — بدء تلقائي..."
+    print("[Lightning] Returned from teleport - auto starting")
+    StatusLabel.Text = "Returned - auto starting..."
     startLoop()
 else
-    print("[Lightning] ✅ جاهز — اضغط START مرة واحدة")
+    print("[Lightning] Ready - press START once")
 end
