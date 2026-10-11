@@ -132,10 +132,33 @@ Credit.Parent = MainFrame
 
 -- Variables
 local running = false
-local hopCount = 0
+local hopCount = tonumber(_G.__LightningHops) or 0
+_G.__LightningHops = nil
+local roundCount = tonumber(_G.__LightningRounds) or 0
+_G.__LightningRounds = nil
+local function updateCount()
+    CountLabel.Text = "Servers: " .. hopCount .. "  |  Rounds: " .. roundCount
+end
+updateCount()
 local teleportFailed = false
-local visited = {}
-visited[game.JobId] = true
+local visited, visitedOrder = {}, {}
+if type(_G.__LightningVisited) == "table" then
+    for _, id in ipairs(_G.__LightningVisited) do
+        if type(id) == "string" and not visited[id] then
+            visited[id] = true
+            table.insert(visitedOrder, id)
+        end
+    end
+end
+_G.__LightningVisited = nil
+
+local function markVisited(id)
+    if id and not visited[id] then
+        visited[id] = true
+        table.insert(visitedOrder, id)
+    end
+end
+markVisited(game.JobId)
 
 -- Tree size thresholds (number of WoodSection parts in the tree)
 -- Small: up to SMALL_MAX | Medium: up to MEDIUM_MAX | Large: more than MEDIUM_MAX
@@ -185,7 +208,17 @@ for name, b in pairs(SizeButtons) do
 end
 refreshSizeButtons()
 
--- Queue the script to run again after teleport, passing along the remaining servers
+-- Turn the last maxN items of an array into a Lua table literal string
+local function toLuaList(arr, maxN)
+    local parts = {}
+    for i = math.max(1, #arr - maxN + 1), #arr do
+        local clean = tostring(arr[i]):gsub("[^%w%-]", "")
+        parts[#parts + 1] = "'" .. clean .. "'"
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- Queue the script to run again after teleport (passes servers, visited list and counter)
 local queued = false
 local function queueNow(remaining)
     if not queueTeleport then return end
@@ -198,15 +231,11 @@ local function queueNow(remaining)
     end
     queued = true
 
-    local parts = {}
-    for i = 1, math.min(#remaining, 60) do
-        local clean = tostring(remaining[i]):gsub("[^%w%-]", "")
-        parts[#parts + 1] = "'" .. clean .. "'"
-    end
-    local list = "{" .. table.concat(parts, ",") .. "}"
-
     local code = "task.wait(0.5) _G.__LightningAutoStart = true _G.__LightningSize = '" .. selectedSize
-        .. "' _G.__LightningServers = " .. list
+        .. "' _G.__LightningHops = " .. hopCount
+        .. " _G.__LightningRounds = " .. roundCount
+        .. " _G.__LightningServers = " .. toLuaList(remaining, 60)
+        .. " _G.__LightningVisited = " .. toLuaList(visitedOrder, 300)
         .. " pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
     pcall(function() queueTeleport(code) end)
 end
@@ -241,23 +270,38 @@ TeleportService.TeleportInitFailed:Connect(function(plr)
     end
 end)
 
--- Fetch a list of public servers (returns nil on failure)
-local function fetchServers()
-    if not requestFunc then return nil, "no request function" end
-
-    local ok, result = pcall(function()
+-- Fetch one page of public servers (fewest players first)
+local function fetchPage(cursor)
+    local ok, a, b, c = pcall(function()
         local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+        if cursor then url = url .. "&cursor=" .. HttpService:UrlEncode(cursor) end
         local res = requestFunc({Url = url, Method = "GET"})
         if not res then return nil, "no response" end
         if res.StatusCode and res.StatusCode ~= 200 then
             return nil, "HTTP " .. tostring(res.StatusCode)
         end
-        local decoded = HttpService:JSONDecode(res.Body)
-        return decoded and decoded.data, nil
+        local d = HttpService:JSONDecode(res.Body)
+        return d.data, nil, d.nextPageCursor
     end)
+    if not ok then return nil, tostring(a) end
+    return a, b, c
+end
 
-    if not ok then return nil, tostring(result) end
-    return result, nil
+-- Fetch up to 2 pages (about 200 servers). Returns nil + error if the first page fails.
+local function fetchServers()
+    if not requestFunc then return nil, "no request function" end
+    local all, cursor = {}, nil
+    for page = 1, 2 do
+        local data, err, nextCursor = fetchPage(cursor)
+        if not data then
+            if page == 1 then return nil, err end
+            break
+        end
+        for _, s in ipairs(data) do all[#all + 1] = s end
+        cursor = nextCursor
+        if not cursor then break end
+    end
+    return all, nil
 end
 
 -- Shuffle so we don't try the same servers every time
@@ -271,9 +315,8 @@ end
 
 -- Tries to teleport to another server. Returns true once a teleport was started.
 local function serverHop()
-    hopCount = hopCount + 1
-    CountLabel.Text = "Servers: " .. hopCount
-    StatusLabel.Text = "Hopping to server #" .. hopCount
+    local counted = false
+    StatusLabel.Text = "Finding a server..."
 
     while alive() do
         -- Only fetch a new list when the cached one is empty
@@ -293,15 +336,29 @@ local function serverHop()
                 return false
             end
 
-            shuffle(servers)
+            -- Rank: fewest players first (with a bit of randomness), skip visited and almost-full servers
+            local pool = {}
             for _, s in ipairs(servers) do
-                if s.id and s.id ~= game.JobId and s.playing and s.maxPlayers and s.playing < s.maxPlayers then
-                    table.insert(serverCache, s.id)
+                if s.id and not visited[s.id] and s.playing and s.maxPlayers and s.playing < s.maxPlayers - 1 then
+                    pool[#pool + 1] = {id = s.id, score = s.playing + math.random() * 3}
                 end
+            end
+            -- Best servers go LAST because we pop from the end of the list
+            table.sort(pool, function(a, b) return a.score > b.score end)
+            for _, e in ipairs(pool) do
+                serverCache[#serverCache + 1] = e.id
             end
 
             if #serverCache == 0 then
-                task.wait(1.5)
+                -- Every server was checked and no tree was found: say so and start a new round
+                local checked = #visitedOrder
+                roundCount = roundCount + 1
+                updateCount()
+                StatusLabel.Text = "Not found after " .. checked .. " servers - starting over"
+                print("[Lightning] tree not found after", checked, "servers - starting a new round")
+                visited, visitedOrder = {}, {}
+                markVisited(game.JobId)
+                task.wait(2)
                 return false
             end
         end
@@ -309,6 +366,13 @@ local function serverHop()
         local id = table.remove(serverCache)
         if id ~= game.JobId then
             teleportFailed = false
+            if not counted then
+                counted = true
+                hopCount = hopCount + 1
+                updateCount()
+            end
+            StatusLabel.Text = "Hopping to server #" .. hopCount
+            markVisited(id)
             queueNow(serverCache)
 
             local ok = pcall(function()
@@ -338,10 +402,12 @@ local function waitForWorld()
     local character = player.Character or player.CharacterAdded:Wait()
     local root = character:WaitForChild("HumanoidRootPart", 15)
     if not root then return false end
-    workspace:WaitForChild("TreeRegion", 10)
+    workspace:WaitForChild("TreeRegion", 3)
     task.wait(0.3) -- tiny delay so the trees can load
     return true
 end
+
+local skippedLogged = setmetatable({}, {__mode = "k"})
 
 local function fastScan()
     local character = player.Character
@@ -357,13 +423,30 @@ local function fastScan()
             local c3 = obj.Color
             local isReallyBlack = (bc and bc.Name == "Really black")
                 or (c3 and c3.R < 0.05 and c3.G < 0.05 and c3.B < 0.05)
+            if isReallyBlack and not sizeMatches(obj) and not skippedLogged[obj.Parent] then
+                skippedLogged[obj.Parent] = true
+                print("[Lightning] black tree skipped (wrong size), sections =", sectionCount(obj.Parent))
+            end
             if isReallyBlack and sizeMatches(obj) then
+                print("[Lightning] found black tree, sections =", sectionCount(obj.Parent))
                 StatusLabel.Text = "Found the tree! (" .. selectedSize .. ")"
                 rootPart.CFrame = obj.CFrame + Vector3.new(0, 3, 0)
                 return true
             end
         end
     end
+    return false
+end
+
+-- Scan for a few seconds (trees can stream in late) before giving up on this server
+local SCAN_SECONDS = 2
+local function scanWindow()
+    local t0 = os.clock()
+    repeat
+        if not alive() then return false end
+        if fastScan() then return true end
+        task.wait(0.4)
+    until os.clock() - t0 >= SCAN_SECONDS
     return false
 end
 
@@ -381,7 +464,7 @@ local function startLoop()
                 if not alive() then break end
                 StatusLabel.Text = "Scanning #" .. hopCount
 
-                if fastScan() then
+                if scanWindow() then
                     running = false
                     updateButton(false)
                     StatusLabel.Text = "Done! Found the tree - press START to hop again"
