@@ -1,4 +1,4 @@
--- Lightning Auto-Hop (autoexec) - our hop + size + sweep
+-- Lightning Auto-Hop - our hop + size + sweep (re-runs itself after every teleport)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local T = game:GetService("TeleportService")
@@ -6,6 +6,10 @@ local H = game:GetService("HttpService")
 local P = game:GetService("Players")
 local pl = P.LocalPlayer
 local rq = (syn and syn.request) or (http and http.request) or http_request or request
+local queueTeleport = (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or queue_on_teleport
+
+-- لينك السكريبت على GitHub (بيشغّله تاني بعد كل teleport)
+local SCRIPT_URL = "https://raw.githubusercontent.com/Ankro0/auto-hub/refs/heads/main/auto%20hop.lua"
 
 -- نسخة واحدة بس تشتغل
 local myToken = {}
@@ -27,16 +31,32 @@ local state = {
     hops = 0, rounds = 0, visited = {}, cache = {}, found = {},
 }
 
-pcall(function()
-    if isfile and readfile and isfile(STATE_FILE) then
-        local d = H:JSONDecode(readfile(STATE_FILE))
-        if type(d) == "table" then
-            for k, v in pairs(d) do
-                if state[k] ~= nil then state[k] = v end
-            end
+local function applyState(d)
+    if type(d) == "table" then
+        for k, v in pairs(d) do
+            if state[k] ~= nil then state[k] = v end
         end
+        return true
     end
-end)
+    return false
+end
+
+-- الحالة اللي جاية من السيرفر اللي فات (عن طريق queue_on_teleport) ليها الأولوية، وبعدين الملف
+local loadedFromQueue = false
+if type(_G.__LightningState) == "string" then
+    pcall(function()
+        loadedFromQueue = applyState(H:JSONDecode(_G.__LightningState))
+    end)
+end
+_G.__LightningState = nil
+
+if not loadedFromQueue then
+    pcall(function()
+        if isfile and readfile and isfile(STATE_FILE) then
+            applyState(H:JSONDecode(readfile(STATE_FILE)))
+        end
+    end)
+end
 
 do
     local okSize = false
@@ -53,6 +73,33 @@ local function saveState()
     pcall(function()
         if writefile then writefile(STATE_FILE, H:JSONEncode(state)) end
     end)
+end
+
+-- يخلي السكريبت يشتغل تاني تلقائي بعد الـ teleport ويبعتله الحالة
+local queued = false
+local function queueNow()
+    if not queueTeleport then return end
+    if queued then
+        if clear_teleport_queue then
+            pcall(clear_teleport_queue)
+        else
+            return
+        end
+    end
+    queued = true
+    local ok, json = pcall(function() return H:JSONEncode(state) end)
+    if not ok then return end
+    local code = "task.wait(0.1) _G.__LightningState = [==[" .. json .. "]==] "
+        .. "pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
+    pcall(function() queueTeleport(code) end)
+end
+
+-- يلغي التشغيل التلقائي المنتظر (لما توقف أو يلاقي الشجرة)
+local function clearQueue()
+    if clear_teleport_queue then
+        pcall(clear_teleport_queue)
+        queued = false
+    end
 end
 
 -- السيرفرات اللي زارها (آخر 300)
@@ -343,6 +390,7 @@ end
 local function attemptTeleport(id)
     teleportFailed = false
     saveState() -- احفظ الحالة قبل ما نمشي
+    queueNow()  -- وشغّل السكريبت تاني بعد النقل
     local ok = pcall(function()
         T:TeleportToPlaceInstance(game.PlaceId, id, pl)
     end)
@@ -493,6 +541,7 @@ local function main()
                     saveState()
                     refreshToggle()
                     updateCount()
+                    clearQueue()
                     status("Done! Found the tree - press START to hop again")
                     break
                 end
@@ -518,6 +567,7 @@ toggleBtn.MouseButton1Click:Connect(function()
             main()
         end)
     else
+        clearQueue()
         status("Stopped")
     end
 end)
