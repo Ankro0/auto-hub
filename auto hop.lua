@@ -185,6 +185,15 @@ local function queueOnce()
     pcall(function() queueTeleport(code) end)
 end
 
+-- Cancel any pending auto-execute (used when the tree is found or you press STOP)
+local function clearQueue()
+    _G.__LightningAutoStart = nil
+    if clear_teleport_queue then
+        pcall(clear_teleport_queue)
+        queued = false
+    end
+end
+
 local function alive()
     return running and _G.__LightningToken == myToken
 end
@@ -347,7 +356,8 @@ local function startLoop()
                 if fastScan() then
                     running = false
                     updateButton(false)
-                    StatusLabel.Text = "Done! Found the tree"
+                    StatusLabel.Text = "Done! Found the tree - press START to hop again"
+                    clearQueue()
                     break
                 end
 
@@ -364,6 +374,7 @@ ToggleButton.MouseButton1Click:Connect(function()
         running = false
         updateButton(false)
         StatusLabel.Text = "Stopped"
+        clearQueue()
     else
         startLoop()
     end
