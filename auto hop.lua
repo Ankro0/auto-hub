@@ -8,13 +8,10 @@ if getgenv then
     getgenv().BTH_JOB = game.JobId
 end
 
--- يعيد تشغيل نفسه بعد كل Teleport (من غير ما يعتمد على autoexec ولا ملفات)
-pcall(function()
-    local q = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
-    if q and SRC then
-        q("local S=[==[" .. SRC .. "]=" .. "=] loadstring(S)(S)")
-    end
-end)
+-- بيعيد تشغيل نفسه بعد كل Teleport ومعاه الحالة (من غير ما يعتمد على ملفات)
+local OPEN, CLOSE = "[==[", "]" .. "==" .. "]"
+local QUEUE = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+local HAS_FS = (writefile and readfile and isfile) and true or false
 
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
@@ -56,15 +53,24 @@ local function save()
     pcall(function() writefile(FILE, HttpService:JSONEncode(State)) end)
 end
 
+local function applyState(data)
+    if type(data) == "table" then
+        for k, v in pairs(data) do State[k] = v end
+    end
+end
+
 pcall(function()
-    if isfile and isfile(FILE) then
-        local data = HttpService:JSONDecode(readfile(FILE))
-        if type(data) == "table" then
-            for k, v in pairs(data) do State[k] = v end
-        end
+    local passed = getgenv and getgenv().BTH_STATE
+    if passed then
+        getgenv().BTH_STATE = nil
+        applyState(HttpService:JSONDecode(passed))
+    elseif HAS_FS and isfile(FILE) then
+        applyState(HttpService:JSONDecode(readfile(FILE)))
     end
 end)
 if State.phase ~= "scan" and State.phase ~= "found" then State.phase = "idle" end
+State.boots = (State.boots or 0) + 1
+save()
 
 ---------------------------------------------------------------- TREE CHECK
 local TARGET = BrickColor.new(CONFIG.TargetBrick)
@@ -249,8 +255,8 @@ mk("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingTop = UDim.new(0, 4) }, s
 
 local note = ""
 local function refresh()
-    status.Text = ("phase: %s | size: %s\nscanned: %d | trees found: %d\n%s")
-        :format(State.phase, State.size, State.scanned, State.hits, note)
+    status.Text = ("phase: %s | size: %s\nscanned: %d | found: %d | runs: %d\n%s")
+        :format(State.phase, State.size, State.scanned, State.hits, State.boots or 1, note)
 end
 local function setNote(t) note = t refresh() end
 
@@ -283,10 +289,19 @@ end
 local tpFailed = false
 TeleportService.TeleportInitFailed:Connect(function() tpFailed = true end)
 
+local function queueSelf()
+    if not (QUEUE and SRC) then return end
+    pcall(function()
+        QUEUE("getgenv().BTH_STATE=" .. OPEN .. HttpService:JSONEncode(State) .. CLOSE
+            .. "\nlocal S=" .. OPEN .. SRC .. CLOSE .. "\nloadstring(S)(S)")
+    end)
+end
+
 local function tp(id)
     tpFailed = false
     State.visited[id] = true
     save()
+    queueSelf()
     pcall(function() TeleportService:TeleportToPlaceInstance(PLACE, id, LP) end)
 end
 
@@ -394,6 +409,7 @@ end)
 
 ---------------------------------------------------------------- BOOT
 paintSizes()
+note = ("queue:%s fs:%s"):format(QUEUE and "yes" or "NO", HAS_FS and "yes" or "NO")
 refresh()
 
 if State.phase == "scan" then
