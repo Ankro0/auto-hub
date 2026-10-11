@@ -1,19 +1,28 @@
--- Lightning Auto-Hop - our hop + size + sweep (re-runs itself after every teleport)
+-- Lightning Auto-Hop (نسخة متصلّحة) - hop + size + sweep
+-- بيشتغل تاني لوحده بعد كل teleport (queue_on_teleport) أو من فولدر autoexec
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local T = game:GetService("TeleportService")
 local H = game:GetService("HttpService")
 local P = game:GetService("Players")
+while not P.LocalPlayer do task.wait() end -- مهم في الـ autoexec: اللاعب ممكن ميبقاش جاهز لسه
 local pl = P.LocalPlayer
+local G = (getgenv and getgenv()) or _G
 local rq = (syn and syn.request) or (http and http.request) or http_request or request
 local queueTeleport = (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or queue_on_teleport
 
--- لينك السكريبت على GitHub (بيشغّله تاني بعد كل teleport)
+-- ═══ إعدادات التشغيل التلقائي ═══
+-- لو السكريبت في فولدر autoexec بتاع الإكسكيوتر خلّيها true (بيلغي queue_on_teleport عشان ميشتغلش مرتين)
+-- لو بتشغله بإيدك مرة واحدة خلّيها false (بيعيد تشغيل نفسه بعد كل teleport)
+local AUTOEXEC = false
+
+-- بعد كل teleport بيحاول يجيب السكريبت من الملف ده في فولدر workspace بتاع الإكسكيوتر، ولو مش موجود بيجيبه من اللينك
+local SCRIPT_FILE = "auto_hop.lua"
 local SCRIPT_URL = "https://raw.githubusercontent.com/Ankro0/auto-hub/refs/heads/main/auto%20hop.lua"
 
--- نسخة واحدة بس تشتغل
-local myToken = {}
-_G.__LightningToken = myToken
+-- (اختياري) PlaceId بتاع اللعبة. لو سبته nil السكريبت بيقفل نفسه على اللعبة اللي فيها شجر أول مرة يشتغل
+-- ده بيمنع الـ autoexec إنه يعمل hop في أي لعبة تانية تدخلها
+local TARGET_PLACE = nil
 
 -- ═══ الإعدادات ═══
 local SMALL_MAX = 10   -- Small: لحد 10 قطع
@@ -24,11 +33,13 @@ local STATE_FILE = "LightningState.json"
 local MIN_SCAN = 1.5   -- أقل وقت فحص
 local MAX_SCAN = 4     -- أقصى وقت فحص
 local SETTLE = 0.8     -- يوقف لما مفيش حاجة جديدة بتتحمل المدة دي
+local TELEPORT_WAIT = 15 -- بيستنى كام ثانية قبل ما يعتبر الـ teleport علّق
 
 -- ═══ الحالة (بتتحفظ في ملف عشان تفضل بعد كل teleport) ═══
 local state = {
     enabled = true, size = "All", sweep = false, visit = false,
     hops = 0, rounds = 0, visited = {}, cache = {}, found = {},
+    placeId = 0,
 }
 
 local function applyState(d)
@@ -41,21 +52,31 @@ local function applyState(d)
     return false
 end
 
--- الحالة اللي جاية من السيرفر اللي فات (عن طريق queue_on_teleport) ليها الأولوية، وبعدين الملف
+local function readFileState()
+    if isfile and readfile and isfile(STATE_FILE) then
+        local ok, d = pcall(function() return H:JSONDecode(readfile(STATE_FILE)) end)
+        if ok and type(d) == "table" then return d end
+    end
+    return nil
+end
+
+-- الحالة اللي جاية من السيرفر اللي فات (queue_on_teleport) وبعدين الملف
 local loadedFromQueue = false
-if type(_G.__LightningState) == "string" then
+if type(G.__LightningState) == "string" then
     pcall(function()
-        loadedFromQueue = applyState(H:JSONDecode(_G.__LightningState))
+        loadedFromQueue = applyState(H:JSONDecode(G.__LightningState))
     end)
 end
-_G.__LightningState = nil
+G.__LightningState = nil
 
-if not loadedFromQueue then
-    pcall(function()
-        if isfile and readfile and isfile(STATE_FILE) then
-            applyState(H:JSONDecode(readfile(STATE_FILE)))
-        end
-    end)
+local fileState = readFileState()
+if fileState then
+    if loadedFromQueue then
+        -- لو دوست STOP/START بعد ما الـ queue اتحفظ، الملف هو اللي فيه الحقيقة
+        if fileState.enabled ~= nil then state.enabled = fileState.enabled end
+    else
+        applyState(fileState)
+    end
 end
 
 do
@@ -67,18 +88,44 @@ do
     for _, k in ipairs({"visited", "cache", "found"}) do
         if type(state[k]) ~= "table" then state[k] = {} end
     end
+    if type(state.placeId) ~= "number" then state.placeId = 0 end
 end
+
+-- ═══ قفل اللعبة (عشان الـ autoexec ميشتغلش في ألعاب تانية) ═══
+local function looksLikeTreeGame()
+    return workspace:FindFirstChild("TreeRegion") ~= nil
+        or workspace:FindFirstChild("WoodSection", true) ~= nil
+end
+
+if TARGET_PLACE then
+    if game.PlaceId ~= TARGET_PLACE then return end
+elseif state.placeId ~= 0 then
+    if game.PlaceId ~= state.placeId then return end
+else
+    local t0 = os.clock()
+    while not looksLikeTreeGame() and os.clock() - t0 < 20 do task.wait(0.5) end
+    if not looksLikeTreeGame() then
+        warn("[Lightning] مفيش شجر في اللعبة دي - السكريبت وقف (امسح LightningState.json لو غلطان)")
+        return
+    end
+    state.placeId = game.PlaceId
+end
+
+-- نسخة واحدة بس تشتغل
+local myToken = {}
+G.__LightningToken = myToken
 
 local function saveState()
     pcall(function()
         if writefile then writefile(STATE_FILE, H:JSONEncode(state)) end
     end)
 end
+saveState()
 
 -- يخلي السكريبت يشتغل تاني تلقائي بعد الـ teleport ويبعتله الحالة
 local queued = false
 local function queueNow()
-    if not queueTeleport then return end
+    if AUTOEXEC or not queueTeleport then return end
     if queued then
         if clear_teleport_queue then
             pcall(clear_teleport_queue)
@@ -89,8 +136,13 @@ local function queueNow()
     queued = true
     local ok, json = pcall(function() return H:JSONEncode(state) end)
     if not ok then return end
-    local code = "task.wait(0.1) _G.__LightningState = [==[" .. json .. "]==] "
-        .. "pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
+    local code = "local G=(getgenv and getgenv()) or _G "
+        .. "G.__LightningState=[==[" .. json .. "]==] "
+        .. "task.wait(0.1) "
+        .. "local src "
+        .. "pcall(function() if isfile and readfile and isfile('" .. SCRIPT_FILE .. "') then src=readfile('" .. SCRIPT_FILE .. "') end end) "
+        .. "if not src then pcall(function() src=game:HttpGet('" .. SCRIPT_URL .. "',true) end) end "
+        .. "if src then local f=loadstring(src) if f then f() end end"
     pcall(function() queueTeleport(code) end)
 end
 
@@ -107,7 +159,7 @@ local visitedSet = {}
 for _, id in ipairs(state.visited) do visitedSet[id] = true end
 
 local function markVisited(id)
-    if id and not visitedSet[id] then
+    if id and id ~= "" and not visitedSet[id] then
         visitedSet[id] = true
         table.insert(state.visited, id)
         if #state.visited > 300 then
@@ -252,7 +304,7 @@ refreshSweep()
 updateCount()
 
 local function alive()
-    return state.enabled and _G.__LightningToken == myToken
+    return state.enabled and G.__LightningToken == myToken
 end
 
 -- ═══ الحجم ═══
@@ -282,9 +334,9 @@ local lastFoundSections = 0
 
 local function scan()
     local c = pl.Character
-    if not c then return false end
+    if not c then return false, 0, 0 end
     local rp = c:FindFirstChild("HumanoidRootPart")
-    if not rp then return false end
+    if not rp then return false, 0, 0 end
     local box = workspace:FindFirstChild("TreeRegion") or workspace
     local descendants = box:GetDescendants()
     local woodCount = 0
@@ -305,9 +357,7 @@ local function scan()
                     return true
                 elseif not skippedLogged[o.Parent] then
                     skippedLogged[o.Parent] = true
-                    local n = sectionCount(o.Parent)
-                    print("[Lightning] black tree skipped (wrong size), sections =", n)
-                    status("Skipped a black tree (" .. n .. " sections) - size filter")
+                    print("[Lightning] black tree skipped (wrong size), sections =", sectionCount(o.Parent))
                 end
             end
         end
@@ -342,9 +392,11 @@ local function scanWindow()
         if (elapsed >= MIN_SCAN and os.clock() - changedAt >= SETTLE) or elapsed >= MAX_SCAN then
             break
         end
-        task.wait(0.3)
+        task.wait(0.4)
     end
-    print("[Lightning] no black tree here, wood sections seen =", woods)
+    if alive() then
+        print("[Lightning] no black tree here, wood sections seen =", woods)
+    end
     return false
 end
 
@@ -364,6 +416,7 @@ local function fetchPage(cursor)
             return nil, "HTTP " .. tostring(res.StatusCode)
         end
         local d = H:JSONDecode(res.Body)
+        if type(d) ~= "table" or type(d.data) ~= "table" then return nil, "bad response" end
         return d.data, nil, d.nextPageCursor
     end)
     if not ok then return nil, tostring(a) end
@@ -396,7 +449,7 @@ local function attemptTeleport(id)
     end)
     if not ok then return false end
     local t = 0
-    while t < 10 and not teleportFailed and alive() do
+    while t < TELEPORT_WAIT and not teleportFailed and alive() do
         task.wait(0.1)
         t = t + 0.1
     end
@@ -423,6 +476,7 @@ local function finishSweep()
 
         status("Going to a saved server (" .. best.n .. " sections) - " .. #state.found .. " left")
         if attemptTeleport(best.id) then return true end
+        task.wait(1)
     end
 
     state.visit = false
@@ -457,50 +511,52 @@ local function serverHop()
             status("Fetching server list...")
             local servers, err = fetchServers()
             if not servers then
+                -- بيعيد المحاولة هنا من غير ما يفحص السيرفر الحالي تاني
                 status("Fetch failed (" .. tostring(err) .. ") - retrying")
-                task.wait((err == "HTTP 429") and 6 or 1)
-                return false
-            end
-
-            -- ترتيب عشوائي، من غير اللي زاره ولا اللي على وشك يتملي
-            local pool = {}
-            for _, s in ipairs(servers) do
-                if s.id and not visitedSet[s.id] and s.playing and s.maxPlayers and s.playing < s.maxPlayers - 1 then
-                    pool[#pool + 1] = {id = s.id, score = math.random()}
+                task.wait((err == "HTTP 429") and 6 or 2)
+            else
+                -- ترتيب عشوائي، من غير اللي زاره ولا اللي على وشك يتملي
+                local pool = {}
+                for _, s in ipairs(servers) do
+                    if s.id and not visitedSet[s.id] and s.playing and s.maxPlayers and s.playing < s.maxPlayers - 1 then
+                        pool[#pool + 1] = {id = s.id, score = math.random()}
+                    end
                 end
-            end
-            table.sort(pool, function(a, b) return a.score > b.score end)
-            for _, e in ipairs(pool) do
-                state.cache[#state.cache + 1] = e.id
-            end
-
-            if #state.cache == 0 then
-                if state.sweep and #state.found > 0 then
-                    return finishSweep()
+                table.sort(pool, function(a, b) return a.score > b.score end)
+                for _, e in ipairs(pool) do
+                    state.cache[#state.cache + 1] = e.id
                 end
-                local checked = #state.visited
-                state.rounds = state.rounds + 1
-                updateCount()
-                status("Not found after " .. checked .. " servers - starting over")
-                print("[Lightning] tree not found after", checked, "servers - starting a new round")
-                resetVisited()
-                saveState()
-                task.wait(2)
-                return false
+
+                if #state.cache == 0 then
+                    if state.sweep and #state.found > 0 then
+                        return finishSweep()
+                    end
+                    local checked = #state.visited
+                    state.rounds = state.rounds + 1
+                    updateCount()
+                    status("Not found after " .. checked .. " servers - starting over")
+                    print("[Lightning] tree not found after", checked, "servers - starting a new round")
+                    resetVisited()
+                    saveState()
+                    task.wait(3)
+                end
             end
         end
 
-        local id = table.remove(state.cache)
-        if id ~= game.JobId then
-            if not counted then
-                counted = true
-                state.hops = state.hops + 1
-                updateCount()
+        if #state.cache > 0 and alive() then
+            local id = table.remove(state.cache)
+            if id ~= game.JobId then
+                if not counted then
+                    counted = true
+                    state.hops = state.hops + 1
+                    updateCount()
+                end
+                status("Hopping to server #" .. state.hops)
+                markVisited(id)
+                if attemptTeleport(id) then return true end
+                status("Teleport failed - next server")
+                task.wait(1)
             end
-            status("Hopping to server #" .. state.hops)
-            markVisited(id)
-            if attemptTeleport(id) then return true end
-            status("Teleport failed - next server")
         end
     end
 
@@ -564,7 +620,7 @@ toggleBtn.MouseButton1Click:Connect(function()
     if state.enabled then
         task.spawn(function()
             while running do task.wait(0.1) end
-            main()
+            if alive() then main() end
         end)
     else
         clearQueue()
