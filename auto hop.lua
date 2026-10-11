@@ -25,7 +25,7 @@ _G.__LightningToken = myToken
 local selectedSize = _G.__LightningSize
 _G.__LightningSize = nil
 if selectedSize ~= "Small" and selectedSize ~= "Medium" and selectedSize ~= "Large" and selectedSize ~= "All" then
-    selectedSize = "Small"
+    selectedSize = "All"
 end
 
 -- Server IDs carried over from the previous server (saves a web request per hop)
@@ -426,6 +426,7 @@ local function fastScan()
             if isReallyBlack and not sizeMatches(obj) and not skippedLogged[obj.Parent] then
                 skippedLogged[obj.Parent] = true
                 print("[Lightning] black tree skipped (wrong size), sections =", sectionCount(obj.Parent))
+                StatusLabel.Text = "Skipped a black tree (" .. sectionCount(obj.Parent) .. " sections) - size filter"
             end
             if isReallyBlack and sizeMatches(obj) then
                 print("[Lightning] found black tree, sections =", sectionCount(obj.Parent))
