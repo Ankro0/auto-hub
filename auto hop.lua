@@ -1,10 +1,11 @@
-﻿-- Lightning Auto-Hop v9 (English Only - No Files)
+-- Lightning Auto-Hop v10 (fixed)
 local SCRIPT_URL = "https://raw.githubusercontent.com/Ankro0/auto-hub/refs/heads/main/auto%20hop.lua"
+
+if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -16,16 +17,19 @@ local queueTeleport = (syn and syn.queue_on_teleport) or (fluxus and fluxus.queu
 local AUTO_START = _G.__LightningAutoStart == true
 _G.__LightningAutoStart = nil
 
--- Setup auto-execute
+-- Make sure only one copy of the script runs at a time
+local myToken = {}
+_G.__LightningToken = myToken
+
+-- Setup auto-execute after teleport
 if queueTeleport then
     local code = "task.wait(1) _G.__LightningAutoStart = true pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
     pcall(function() queueTeleport(code) end)
 end
 
 -- Clean old GUI
-if playerGui:FindFirstChild("LightningTreeHop") then
-    playerGui.LightningTreeHop:Destroy()
-end
+local old = playerGui:FindFirstChild("LightningTreeHop")
+if old then old:Destroy() end
 
 -- GUI
 local ScreenGui = Instance.new("ScreenGui")
@@ -50,7 +54,7 @@ Stroke.Thickness = 1.5
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 35)
 Title.BackgroundTransparency = 1
-Title.Text = "Lightning Auto-Hop v9"
+Title.Text = "Lightning Auto-Hop v10"
 Title.TextColor3 = Color3.fromRGB(0, 255, 170)
 Title.TextSize = 13
 Title.Font = Enum.Font.GothamBold
@@ -102,8 +106,14 @@ Credit.Parent = MainFrame
 
 -- Variables
 local running = false
-local hopping = false
 local hopCount = 0
+local teleportFailed = false
+local visited = {}
+visited[game.JobId] = true
+
+local function alive()
+    return running and _G.__LightningToken == myToken
+end
 
 local function updateButton(isRunning)
     if isRunning then
@@ -115,40 +125,110 @@ local function updateButton(isRunning)
     end
 end
 
+-- Detect failed teleports so the script never gets stuck
+TeleportService.TeleportInitFailed:Connect(function(plr)
+    if plr == player then
+        teleportFailed = true
+    end
+end)
+
+-- Fetch a list of public servers (returns nil on failure)
+local function fetchServers()
+    if not requestFunc then return nil, "no request function" end
+
+    local ok, result = pcall(function()
+        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+        local res = requestFunc({Url = url, Method = "GET"})
+        if not res then return nil, "no response" end
+        if res.StatusCode and res.StatusCode ~= 200 then
+            return nil, "HTTP " .. tostring(res.StatusCode)
+        end
+        local decoded = HttpService:JSONDecode(res.Body)
+        return decoded and decoded.data, nil
+    end)
+
+    if not ok then return nil, tostring(result) end
+    return result, nil
+end
+
+-- Shuffle so we don't try the same servers every time
+local function shuffle(t)
+    for i = #t, 2, -1 do
+        local j = math.random(1, i)
+        t[i], t[j] = t[j], t[i]
+    end
+    return t
+end
+
+-- Tries to teleport to another server. Returns true once a teleport was started.
 local function serverHop()
-    if hopping then return end
-    hopping = true
-    
     hopCount = hopCount + 1
     CountLabel.Text = "Servers: " .. hopCount
     StatusLabel.Text = "Hopping to server #" .. hopCount
 
     if not requestFunc then
-        StatusLabel.Text = "Error: no request function"
-        hopping = false
-        return
+        StatusLabel.Text = "Error: no request function in your executor"
+        running = false
+        updateButton(false)
+        return false
     end
 
-    local success, servers = pcall(function()
-        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
-        local res = requestFunc({Url = url, Method = "GET"})
-        return HttpService:JSONDecode(res.Body).data
-    end)
+    local servers, err = fetchServers()
+    if not servers then
+        StatusLabel.Text = "Fetch failed (" .. tostring(err) .. ") - retrying"
+        -- Longer wait on rate limit
+        task.wait((err == "HTTP 429") and 8 or 3)
+        return false
+    end
 
-    if success and servers then
-        for _, s in ipairs(servers) do
-            if s.playing < s.maxPlayers and s.id ~= game.JobId then
-                local ok = pcall(function()
-                    TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, player)
-                end)
-                if ok then return end
+    shuffle(servers)
+
+    local tried = false
+    for _, s in ipairs(servers) do
+        if not alive() then return false end
+        if s.id and not visited[s.id] and s.playing and s.maxPlayers and s.playing < s.maxPlayers then
+            tried = true
+            visited[s.id] = true
+            teleportFailed = false
+
+            local ok = pcall(function()
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, player)
+            end)
+
+            if ok then
+                -- Wait up to 12s for the teleport to either happen or fail
+                local t = 0
+                while t < 12 and not teleportFailed and alive() do
+                    task.wait(0.5)
+                    t = t + 0.5
+                end
+                if not teleportFailed then
+                    return true
+                end
+                StatusLabel.Text = "Teleport failed - trying another server"
+                task.wait(1)
             end
         end
     end
 
+    -- Visited everything we saw: reset the list and try again
+    if not tried then
+        visited = {}
+        visited[game.JobId] = true
+    end
+
     task.wait(1.5)
-    hopping = false
-    if running then serverHop() end
+    return false
+end
+
+-- Wait until the character and the world are ready before scanning
+local function waitForWorld()
+    local character = player.Character or player.CharacterAdded:Wait()
+    local root = character:WaitForChild("HumanoidRootPart", 15)
+    if not root then return false end
+    workspace:WaitForChild("TreeRegion", 10)
+    task.wait(1.5) -- give the trees a moment to load
+    return true
 end
 
 local function fastScan()
@@ -163,7 +243,8 @@ local function fastScan()
         if obj.Name == "WoodSection" and obj:IsA("BasePart") then
             local bc = obj.BrickColor
             local c3 = obj.Color
-            local isReallyBlack = (bc and bc.Name == "Really black") or (c3 and c3.R < 0.05 and c3.G < 0.05 and c3.B < 0.05)
+            local isReallyBlack = (bc and bc.Name == "Really black")
+                or (c3 and c3.R < 0.05 and c3.G < 0.05 and c3.B < 0.05)
             if isReallyBlack then
                 StatusLabel.Text = "Found the tree!"
                 rootPart.CFrame = obj.CFrame + Vector3.new(0, 3, 0)
@@ -178,25 +259,27 @@ local function startLoop()
     if running then return end
     running = true
     updateButton(true)
-    
+
     task.spawn(function()
-        task.wait(2)
-        while running do
-            StatusLabel.Text = "Scanning #" .. hopCount
-            
-            if fastScan() then
-                running = false
-                updateButton(false)
-                StatusLabel.Text = "Done! Found the tree"
-                break
+        while alive() do
+            StatusLabel.Text = "Loading world..."
+            if not waitForWorld() then
+                task.wait(2)
             else
-                if running then
-                    serverHop()
+                if not alive() then break end
+                StatusLabel.Text = "Scanning #" .. hopCount
+
+                if fastScan() then
+                    running = false
+                    updateButton(false)
+                    StatusLabel.Text = "Done! Found the tree"
                     break
                 end
+
+                if not alive() then break end
+                serverHop()
             end
-            
-            RunService.RenderStepped:Wait()
+            task.wait(0.2)
         end
     end)
 end
