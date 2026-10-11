@@ -48,7 +48,7 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = playerGui
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 300, 0, 250)
+MainFrame.Size = UDim2.new(0, 300, 0, 285)
 MainFrame.Position = UDim2.new(0.05, 0, 0.2, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
 MainFrame.BorderSizePixel = 0
@@ -110,9 +110,21 @@ for i, name in ipairs({"Small", "Medium", "Large", "All"}) do
     SizeButtons[name] = b
 end
 
+local SweepButton = Instance.new("TextButton")
+SweepButton.Name = "SweepButton"
+SweepButton.Size = UDim2.new(0, 276, 0, 28)
+SweepButton.Position = UDim2.new(0, 12, 0, 184)
+SweepButton.BackgroundColor3 = Color3.fromRGB(40, 40, 58)
+SweepButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+SweepButton.TextSize = 11
+SweepButton.Font = Enum.Font.GothamBold
+SweepButton.Text = "Sweep: OFF"
+SweepButton.Parent = MainFrame
+Instance.new("UICorner", SweepButton).CornerRadius = UDim.new(0, 8)
+
 local CountLabel = Instance.new("TextLabel")
 CountLabel.Size = UDim2.new(1, -24, 0, 25)
-CountLabel.Position = UDim2.new(0, 12, 0, 184)
+CountLabel.Position = UDim2.new(0, 12, 0, 216)
 CountLabel.BackgroundTransparency = 1
 CountLabel.Text = "Servers: 0"
 CountLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
@@ -136,8 +148,37 @@ local hopCount = tonumber(_G.__LightningHops) or 0
 _G.__LightningHops = nil
 local roundCount = tonumber(_G.__LightningRounds) or 0
 _G.__LightningRounds = nil
+
+-- Sweep mode: check every server, remember the ones with the tree, then go to the best one
+local sweepMode = _G.__LightningSweep == true
+_G.__LightningSweep = nil
+local visitMode = _G.__LightningVisit == true
+_G.__LightningVisit = nil
+local foundList = {}
+if type(_G.__LightningFound) == "string" then
+    for id, n in _G.__LightningFound:gmatch("([%w%-]+):(%d+)") do
+        table.insert(foundList, {id = id, n = tonumber(n)})
+    end
+end
+_G.__LightningFound = nil
+
+local function foundToString()
+    local parts = {}
+    for _, f in ipairs(foundList) do
+        local clean = tostring(f.id):gsub("[^%w%-]", "")
+        parts[#parts + 1] = clean .. ":" .. tostring(f.n)
+    end
+    return table.concat(parts, ",")
+end
+
 local function updateCount()
-    CountLabel.Text = "Servers: " .. hopCount .. "  |  Rounds: " .. roundCount
+    local text = "Servers: " .. hopCount .. "  |  Rounds: " .. roundCount
+    if sweepMode then
+        text = text .. "  |  Found: " .. #foundList
+    elseif visitMode then
+        text = text .. "  |  Saved: " .. #foundList
+    end
+    CountLabel.Text = text
 end
 updateCount()
 local teleportFailed = false
@@ -208,6 +249,29 @@ for name, b in pairs(SizeButtons) do
 end
 refreshSizeButtons()
 
+local function refreshSweepButton()
+    if sweepMode then
+        SweepButton.Text = "Sweep: ON (check all, then go to the best)"
+        SweepButton.BackgroundColor3 = Color3.fromRGB(0, 150, 200)
+    else
+        SweepButton.Text = "Sweep: OFF"
+        SweepButton.BackgroundColor3 = Color3.fromRGB(40, 40, 58)
+    end
+end
+
+SweepButton.MouseButton1Click:Connect(function()
+    if running then
+        StatusLabel.Text = "Press STOP first to change Sweep"
+        return
+    end
+    sweepMode = not sweepMode
+    foundList = {}
+    refreshSweepButton()
+    updateCount()
+    StatusLabel.Text = sweepMode and "Sweep ON" or "Sweep OFF"
+end)
+refreshSweepButton()
+
 -- Turn the last maxN items of an array into a Lua table literal string
 local function toLuaList(arr, maxN)
     local parts = {}
@@ -231,9 +295,12 @@ local function queueNow(remaining)
     end
     queued = true
 
-    local code = "task.wait(0.5) _G.__LightningAutoStart = true _G.__LightningSize = '" .. selectedSize
+    local code = "task.wait(0.1) _G.__LightningAutoStart = true _G.__LightningSize = '" .. selectedSize
         .. "' _G.__LightningHops = " .. hopCount
         .. " _G.__LightningRounds = " .. roundCount
+        .. " _G.__LightningSweep = " .. tostring(sweepMode)
+        .. " _G.__LightningVisit = " .. tostring(visitMode)
+        .. " _G.__LightningFound = '" .. foundToString() .. "'"
         .. " _G.__LightningServers = " .. toLuaList(remaining, 60)
         .. " _G.__LightningVisited = " .. toLuaList(visitedOrder, 300)
         .. " pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
@@ -313,10 +380,57 @@ local function shuffle(t)
     return t
 end
 
+-- Sweep finished: visit the servers where we found a tree, biggest tree first.
+-- If a tree is gone when we arrive, the script goes to the next saved server.
+local function finishSweep()
+    table.sort(foundList, function(a, b) return a.n > b.n end)
+    sweepMode = false
+    visitMode = true
+
+    while #foundList > 0 do
+        if not alive() then return false end
+        local best = table.remove(foundList, 1)
+        updateCount()
+
+        if best.id == game.JobId then
+            StatusLabel.Text = "Sweep done - the tree is on this server"
+            return "here"
+        end
+
+        StatusLabel.Text = "Going to a saved server (" .. best.n .. " sections) - " .. #foundList .. " left"
+        teleportFailed = false
+        queueNow(serverCache)
+        local ok = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, best.id, player)
+        end)
+        if ok then
+            local t = 0
+            while t < 10 and not teleportFailed and alive() do
+                task.wait(0.1)
+                t = t + 0.1
+            end
+            if not teleportFailed then return true end
+        end
+    end
+
+    visitMode = false
+    updateCount()
+    return false
+end
+
 -- Tries to teleport to another server. Returns true once a teleport was started.
 local function serverHop()
     local counted = false
     StatusLabel.Text = "Finding a server..."
+
+    if visitMode then
+        if #foundList > 0 then
+            local r = finishSweep()
+            if r then return r end
+        end
+        visitMode = false
+        updateCount()
+    end
 
     while alive() do
         -- Only fetch a new list when the cached one is empty
@@ -336,20 +450,24 @@ local function serverHop()
                 return false
             end
 
-            -- Rank: fewest players first (with a bit of randomness), skip visited and almost-full servers
+            -- Random order, skip visited and almost-full servers
             local pool = {}
             for _, s in ipairs(servers) do
                 if s.id and not visited[s.id] and s.playing and s.maxPlayers and s.playing < s.maxPlayers - 1 then
-                    pool[#pool + 1] = {id = s.id, score = s.playing + math.random() * 3}
+                    pool[#pool + 1] = {id = s.id, score = math.random()}
                 end
             end
-            -- Best servers go LAST because we pop from the end of the list
-            table.sort(pool, function(a, b) return a.score > b.score end)
+                        table.sort(pool, function(a, b) return a.score > b.score end)
             for _, e in ipairs(pool) do
                 serverCache[#serverCache + 1] = e.id
             end
 
             if #serverCache == 0 then
+                -- Sweep mode: go to the best server found during this round
+                if sweepMode and #foundList > 0 then
+                    return finishSweep()
+                end
+
                 -- Every server was checked and no tree was found: say so and start a new round
                 local checked = #visitedOrder
                 roundCount = roundCount + 1
@@ -402,12 +520,12 @@ local function waitForWorld()
     local character = player.Character or player.CharacterAdded:Wait()
     local root = character:WaitForChild("HumanoidRootPart", 15)
     if not root then return false end
-    workspace:WaitForChild("TreeRegion", 3)
-    task.wait(0.3) -- tiny delay so the trees can load
+    workspace:WaitForChild("TreeRegion", 2)
     return true
 end
 
 local skippedLogged = setmetatable({}, {__mode = "k"})
+local lastFoundSections = 0
 
 local function fastScan()
     local character = player.Character
@@ -417,7 +535,8 @@ local function fastScan()
 
     local container = workspace:FindFirstChild("TreeRegion") or workspace
 
-    for _, obj in ipairs(container:GetDescendants()) do
+    local descendants = container:GetDescendants()
+    for _, obj in ipairs(descendants) do
         if obj.Name == "WoodSection" and obj:IsA("BasePart") then
             local bc = obj.BrickColor
             local c3 = obj.Color
@@ -431,22 +550,30 @@ local function fastScan()
             if isReallyBlack and sizeMatches(obj) then
                 print("[Lightning] found black tree, sections =", sectionCount(obj.Parent))
                 StatusLabel.Text = "Found the tree! (" .. selectedSize .. ")"
-                rootPart.CFrame = obj.CFrame + Vector3.new(0, 3, 0)
+                lastFoundSections = sectionCount(obj.Parent)
+                if not sweepMode then
+                    rootPart.CFrame = obj.CFrame + Vector3.new(0, 3, 0)
+                end
                 return true
             end
         end
     end
-    return false
+    return false, #descendants
 end
 
--- Scan for a few seconds (trees can stream in late) before giving up on this server
-local SCAN_SECONDS = 2
+-- Scan quickly; only keep rescanning while new objects are still loading in
+local SCAN_SECONDS = 1.2
 local function scanWindow()
     local t0 = os.clock()
+    local lastCount = -1
     repeat
         if not alive() then return false end
-        if fastScan() then return true end
-        task.wait(0.4)
+        local found, count = fastScan()
+        if found then return true end
+        count = count or 0
+        if count == lastCount then return false end -- nothing new loaded, move on
+        lastCount = count
+        task.wait(0.25)
     until os.clock() - t0 >= SCAN_SECONDS
     return false
 end
@@ -466,11 +593,24 @@ local function startLoop()
                 StatusLabel.Text = "Scanning #" .. hopCount
 
                 if scanWindow() then
-                    running = false
-                    updateButton(false)
-                    StatusLabel.Text = "Done! Found the tree - press START to hop again"
-                    clearQueue()
-                    break
+                    if sweepMode then
+                        local already = false
+                        for _, f in ipairs(foundList) do
+                            if f.id == game.JobId then already = true end
+                        end
+                        if not already then
+                            table.insert(foundList, {id = game.JobId, n = lastFoundSections})
+                        end
+                        updateCount()
+                        StatusLabel.Text = "Sweep: found " .. #foundList .. " so far - continuing"
+                        print("[Lightning] sweep found a tree, sections =", lastFoundSections)
+                    else
+                        running = false
+                        updateButton(false)
+                        StatusLabel.Text = "Done! Found the tree - press START to hop again"
+                        clearQueue()
+                        break
+                    end
                 end
 
                 if not alive() then break end
