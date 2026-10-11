@@ -21,10 +21,11 @@ _G.__LightningAutoStart = nil
 local myToken = {}
 _G.__LightningToken = myToken
 
--- Setup auto-execute after teleport
-if queueTeleport then
-    local code = "task.wait(1) _G.__LightningAutoStart = true pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
-    pcall(function() queueTeleport(code) end)
+-- Selected tree size (kept across teleports)
+local selectedSize = _G.__LightningSize
+_G.__LightningSize = nil
+if selectedSize ~= "Small" and selectedSize ~= "Medium" and selectedSize ~= "Large" then
+    selectedSize = "Small"
 end
 
 -- Clean old GUI
@@ -38,7 +39,7 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = playerGui
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 300, 0, 220)
+MainFrame.Size = UDim2.new(0, 300, 0, 250)
 MainFrame.Position = UDim2.new(0.05, 0, 0.2, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
 MainFrame.BorderSizePixel = 0
@@ -84,9 +85,25 @@ ToggleButton.Text = "START"
 ToggleButton.Parent = MainFrame
 Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 8)
 
+local SizeButtons = {}
+for i, name in ipairs({"Small", "Medium", "Large"}) do
+    local b = Instance.new("TextButton")
+    b.Name = "Size_" .. name
+    b.Size = UDim2.new(0, 88, 0, 30)
+    b.Position = UDim2.new(0, 12 + (i - 1) * 94, 0, 146)
+    b.BackgroundColor3 = Color3.fromRGB(40, 40, 58)
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.TextSize = 12
+    b.Font = Enum.Font.GothamBold
+    b.Text = name
+    b.Parent = MainFrame
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+    SizeButtons[name] = b
+end
+
 local CountLabel = Instance.new("TextLabel")
 CountLabel.Size = UDim2.new(1, -24, 0, 25)
-CountLabel.Position = UDim2.new(0, 12, 0, 145)
+CountLabel.Position = UDim2.new(0, 12, 0, 184)
 CountLabel.BackgroundTransparency = 1
 CountLabel.Text = "Servers: 0"
 CountLabel.TextColor3 = Color3.fromRGB(150, 150, 180)
@@ -110,6 +127,63 @@ local hopCount = 0
 local teleportFailed = false
 local visited = {}
 visited[game.JobId] = true
+
+-- Tree size thresholds (number of WoodSection parts in the tree)
+-- Small: up to SMALL_MAX | Medium: up to MEDIUM_MAX | Large: more than MEDIUM_MAX
+local SMALL_MAX = 10
+local MEDIUM_MAX = 25
+
+local function sectionCount(model)
+    local n = 0
+    for _, c in ipairs(model:GetChildren()) do
+        if c.Name == "WoodSection" then n = n + 1 end
+    end
+    return n
+end
+
+local function sizeMatches(obj)
+    local n = sectionCount(obj.Parent)
+    if selectedSize == "Small" then
+        return n <= SMALL_MAX
+    elseif selectedSize == "Medium" then
+        return n > SMALL_MAX and n <= MEDIUM_MAX
+    else
+        return n > MEDIUM_MAX
+    end
+end
+
+local function refreshSizeButtons()
+    for name, b in pairs(SizeButtons) do
+        if name == selectedSize then
+            b.BackgroundColor3 = Color3.fromRGB(0, 150, 200)
+        else
+            b.BackgroundColor3 = Color3.fromRGB(40, 40, 58)
+        end
+    end
+end
+
+for name, b in pairs(SizeButtons) do
+    b.MouseButton1Click:Connect(function()
+        if running then
+            StatusLabel.Text = "Press STOP first to change the size"
+            return
+        end
+        selectedSize = name
+        refreshSizeButtons()
+        StatusLabel.Text = "Tree size: " .. name
+    end)
+end
+refreshSizeButtons()
+
+-- Queue the script to run again after teleport (once, with the chosen size)
+local queued = false
+local function queueOnce()
+    if queued or not queueTeleport then return end
+    queued = true
+    local code = "task.wait(1) _G.__LightningAutoStart = true _G.__LightningSize = '" .. selectedSize
+        .. "' pcall(function() loadstring(game:HttpGet('" .. SCRIPT_URL .. "', true))() end)"
+    pcall(function() queueTeleport(code) end)
+end
 
 local function alive()
     return running and _G.__LightningToken == myToken
@@ -183,6 +257,7 @@ local function serverHop()
 
     shuffle(servers)
 
+    queueOnce()
     local tried = false
     for _, s in ipairs(servers) do
         if not alive() then return false end
@@ -245,8 +320,8 @@ local function fastScan()
             local c3 = obj.Color
             local isReallyBlack = (bc and bc.Name == "Really black")
                 or (c3 and c3.R < 0.05 and c3.G < 0.05 and c3.B < 0.05)
-            if isReallyBlack then
-                StatusLabel.Text = "Found the tree!"
+            if isReallyBlack and sizeMatches(obj) then
+                StatusLabel.Text = "Found the tree! (" .. selectedSize .. ")"
                 rootPart.CFrame = obj.CFrame + Vector3.new(0, 3, 0)
                 return true
             end
