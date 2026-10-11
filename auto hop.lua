@@ -1,30 +1,19 @@
---[[
-    Black Tree Auto Hop  (Auto-Exec ready)
-    1) Scan  : بيلف على السيرفرات واحد واحد، يفحص الشجرة السودا، ويسجل السيرفرات اللي فيها
-    2) Visit : كل ما تدوس Start يدخلك أول سيرفر من اللي لقاهم
-    3) لما يخلصوا كلهم -> يرجع يعمل Scan جديد لوحده
-    الحالة بتتحفظ في ملف عشان تكمل بعد كل Teleport (حطه في فولدر autoexec)
-]]
+local S=[==[
+local SRC = ...
 
--- الحارس بقى لكل سيرفر (JobId) عشان ما يمنعش التشغيل بعد الـ Teleport
+-- حارس لكل سيرفر (JobId): يمنع التشغيل المزدوج ولا يمنع التشغيل بعد الـ Teleport
+if not game:IsLoaded() then game.Loaded:Wait() end
 if getgenv then
     if getgenv().BTH_JOB == game.JobId then return end
     getgenv().BTH_JOB = game.JobId
 end
-if not game:IsLoaded() then game.Loaded:Wait() end
 
--- احتياطي: لو الـ autoexec مش شغال، يعيد تشغيل نفسه بعد كل Teleport
--- (لازم تحط نفس الملف في فولدر workspace باسم auto hop.lua)
+-- يعيد تشغيل نفسه بعد كل Teleport (من غير ما يعتمد على autoexec ولا ملفات)
 pcall(function()
     local q = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
-    if q then
-        q([[pcall(function() if isfile and isfile("auto hop.lua") then loadstring(readfile("auto hop.lua"))() end end)]])
+    if q and SRC then
+        q("local S=[==[" .. SRC .. "]=" .. "=] loadstring(S)(S)")
     end
-end)
-
-pcall(function()
-    local old = (gethui and gethui() or game:GetService("CoreGui")):FindFirstChild("BTH_GUI")
-    if old then old:Destroy() end
 end)
 
 local Players = game:GetService("Players")
@@ -33,49 +22,49 @@ local HttpService = game:GetService("HttpService")
 local LP = Players.LocalPlayer
 while not LP do task.wait() LP = Players.LocalPlayer end
 
+pcall(function()
+    local old = (gethui and gethui() or game:GetService("CoreGui")):FindFirstChild("BTH_GUI")
+    if old then old:Destroy() end
+end)
+
 local PLACE, JOB = game.PlaceId, game.JobId
-local FILE = "BlackTreeHop_state.json"
+local FILE = "auto_hop_state.json"
 
 ---------------------------------------------------------------- CONFIG
 local CONFIG = {
     TargetBrick     = "Really black", -- لون الخشب المطلوب
-    TreeClass       = nil,            -- لو عايز نوع شجرة معين اكتب اسمه (مثلا "Oak") وإلا سيبه nil
-    SizeLimits      = { small = 3, medium = 6 }, -- سمك الجذع: <=3 small | <=6 medium | اكتر من كده large
-    LoadTimeout     = 10,             -- أقصى انتظار لتحميل الشجر في السيرفر (ثواني)
-    SettleWait      = 0.8,            -- انتظار اضافي بعد ظهور الشجر (زوّده لو بيفوّت شجر)
-    TeleportTimeout = 15,             -- لو الـ Teleport علّق نجرب سيرفر تاني
-    HopDelay        = 0.3,            -- فاصل بين كل محاولة (زوّده لو جالك rate limit)
-    MaxPages        = 20,             -- عدد صفحات السيرفرات (100 سيرفر للصفحة)
-    AutoSkipGone    = true,           -- في وضع Visit لو الشجرة اختفت يروح اللي بعده لوحده
+    TreeClass       = nil,            -- نوع شجرة معين (مثلا "Oak") وإلا سيبه nil
+    SizeLimits      = { small = 3, medium = 6 }, -- سمك الجذع: <=3 small | <=6 medium | اكتر large
+    LoadTimeout     = 10,             -- أقصى انتظار لتحميل الشجر (ثواني)
+    SettleWait      = 0.8,            -- زوّده لو بيفوّت شجر
+    TeleportTimeout = 15,             -- لو الـ Teleport علّق يجرب سيرفر تاني
+    HopDelay        = 0.3,            -- زوّده لو جالك rate limit
+    MaxPages        = 20,             -- صفحات السيرفرات (100 سيرفر للصفحة)
 }
 
 ---------------------------------------------------------------- STATE
 local State = {
-    phase = "idle",  -- idle | scan | ready | visit
+    phase = "idle",  -- idle | scan | found
     size = "all",    -- small | medium | large | all
-    found = {},      -- { {id=, small=, medium=, large=}, ... }
-    done = {},       -- سيرفرات اتزارت
-    visited = {},    -- سيرفرات اتفحصت
-    pool = {},       -- سيرفرات لسه هنفحصها
+    visited = {},
+    pool = {},
     scanned = 0,
+    hits = 0,
 }
 
 local function save()
     pcall(function() writefile(FILE, HttpService:JSONEncode(State)) end)
 end
 
-local function load()
-    local ok, data = pcall(function()
-        if isfile and isfile(FILE) then
-            return HttpService:JSONDecode(readfile(FILE))
+pcall(function()
+    if isfile and isfile(FILE) then
+        local data = HttpService:JSONDecode(readfile(FILE))
+        if type(data) == "table" then
+            for k, v in pairs(data) do State[k] = v end
         end
-    end)
-    if ok and type(data) == "table" then
-        for k, v in pairs(data) do State[k] = v end
     end
-end
-
-load()
+end)
+if State.phase ~= "scan" and State.phase ~= "found" then State.phase = "idle" end
 
 ---------------------------------------------------------------- TREE CHECK
 local TARGET = BrickColor.new(CONFIG.TargetBrick)
@@ -92,7 +81,7 @@ local function classify(th)
     return "large"
 end
 
--- بترجع نتيجة الشجرة لو سودا + طبيعية (مش مزروعة من لاعب)
+-- بترجع سمك الجذع لو الشجرة سودا + طبيعية (مش مزروعة من لاعب)
 local function analyzeTree(model)
     local owner = model:FindFirstChild("Owner")
     if owner and owner:IsA("ValueBase") then
@@ -121,6 +110,7 @@ local function isTree(m)
 end
 
 local function scanCurrent()
+    local res = { small = 0, medium = 0, large = 0, maxThick = 0, trees = {} }
     local deadline = os.clock() + CONFIG.LoadTimeout
     local seen = false
     repeat
@@ -130,12 +120,9 @@ local function scanCurrent()
         if seen then break end
         task.wait(0.25)
     until os.clock() > deadline
-    if not seen then
-        return { small = 0, medium = 0, large = 0, maxThick = 0, trees = {} }
-    end
+    if not seen then return res end
     task.wait(CONFIG.SettleWait)
 
-    local res = { small = 0, medium = 0, large = 0, maxThick = 0, trees = {} }
     for _, m in ipairs(workspace:GetDescendants()) do
         if isTree(m) then
             local th = analyzeTree(m)
@@ -150,22 +137,48 @@ local function scanCurrent()
     return res
 end
 
----------------------------------------------------------------- HELPERS
-local function countFor(e)
-    if State.size == "all" then
-        return (e.small or 0) + (e.medium or 0) + (e.large or 0)
-    end
-    return e[State.size] or 0
+local function matchCount(r)
+    if State.size == "all" then return r.small + r.medium + r.large end
+    return r[State.size] or 0
 end
 
-local function queue()
-    local q = {}
-    for _, e in ipairs(State.found) do
-        if countFor(e) > 0 and not State.done[e.id] then table.insert(q, e) end
+-- تيليبورت للكاركتر عند أقرب شجرة مطابقة للحجم المختار
+local function teleportToTree(r)
+    local char = LP.Character
+    local t0 = os.clock()
+    while (not char or not char:FindFirstChild("HumanoidRootPart")) and os.clock() - t0 < 15 do
+        task.wait(0.5)
+        char = LP.Character
     end
-    return q
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+
+    local best, bestDist, bestBase
+    for _, t in ipairs(r.trees) do
+        if (State.size == "all" or t.size == State.size) and t.model.Parent then
+            local base
+            for _, c in ipairs(t.model:GetChildren()) do
+                if c.Name == "WoodSection" and c:IsA("BasePart") then
+                    if not base or c.Position.Y < base.Position.Y then base = c end
+                end
+            end
+            if base then
+                local d = (base.Position - root.Position).Magnitude
+                if not bestDist or d < bestDist then
+                    best, bestDist, bestBase = t, d, base
+                end
+            end
+        end
+    end
+    if not best then return false end
+
+    local pos = bestBase.Position + Vector3.new(best.thick / 2 + 4, 3, 0)
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.CFrame = CFrame.new(pos, bestBase.Position)
+    return true
 end
 
+---------------------------------------------------------------- SERVERS
 local function httpGet(url)
     local ok, res = pcall(function() return game:HttpGet(url) end)
     if ok and res then return res end
@@ -220,7 +233,7 @@ local main = mk("Frame", {
 mk("UICorner", { CornerRadius = UDim.new(0, 8) }, main)
 
 mk("TextLabel", {
-    Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, Text = "Black Tree Hop",
+    Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, Text = "auto hop",
     TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 15,
 }, main)
 
@@ -236,13 +249,9 @@ mk("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingTop = UDim.new(0, 4) }, s
 
 local note = ""
 local function refresh()
-    local q = queue()
-    local withTree = 0
-    for _, e in ipairs(State.found) do if countFor(e) > 0 then withTree += 1 end end
-    status.Text = ("Phase: %s | Size: %s\nScanned: %d\nServers with tree: %d (left: %d)\n%s")
-        :format(State.phase, State.size, State.scanned, withTree, #q, note)
+    status.Text = ("phase: %s | size: %s\nscanned: %d | trees found: %d\n%s")
+        :format(State.phase, State.size, State.scanned, State.hits, note)
 end
-
 local function setNote(t) note = t refresh() end
 
 local sizeBtns = {}
@@ -272,9 +281,7 @@ end
 
 ---------------------------------------------------------------- LOGIC
 local tpFailed = false
-TeleportService.TeleportInitFailed:Connect(function()
-    tpFailed = true
-end)
+TeleportService.TeleportInitFailed:Connect(function() tpFailed = true end)
 
 local function tp(id)
     tpFailed = false
@@ -290,10 +297,10 @@ local function nextFromPool()
     end
 end
 
-local function pickScanTarget()
+local function pickTarget()
     local id = nextFromPool()
     if id then return id end
-    setNote("Refreshing server list...")
+    setNote("refreshing server list...")
     local list = fetchServers()
     if not list then return nil, "http" end
     for _, s in ipairs(list) do
@@ -305,45 +312,30 @@ local function pickScanTarget()
     return nextFromPool()
 end
 
-local function finishScan()
-    State.phase = (#queue() > 0) and "ready" or "idle"
-    save()
-    setNote(("Scan done. %d server(s) have the tree. Press Start."):format(#queue()))
-end
-
-local function scanHere()
-    State.visited[JOB] = true
-    setNote("Checking this server...")
-    local r = scanCurrent()
-    if (r.small + r.medium + r.large) > 0 then
-        local exists = false
-        for _, e in ipairs(State.found) do if e.id == JOB then exists = true end end
-        if not exists then
-            table.insert(State.found, { id = JOB, small = r.small, medium = r.medium, large = r.large })
-        end
-    end
-    State.scanned += 1
-    save()
-    refresh()
-    return r
-end
-
 local function hopLoop()
     local httpFails = 0
     while State.phase == "scan" do
-        local id, err = pickScanTarget()
+        local id, err = pickTarget()
         if not id then
-            if err == "http" and httpFails < 5 then
+            if err == "http" then
                 httpFails += 1
-                setNote("Server list failed, retrying...")
+                if httpFails >= 5 then
+                    State.phase = "idle" save()
+                    setNote("server list failed, press START to retry")
+                    return
+                end
+                setNote("server list failed, retrying...")
                 task.wait(5)
             else
-                finishScan()
-                return
+                -- خلصنا كل السيرفرات: ابدأ لفة جديدة
+                State.visited, State.pool = {}, {}
+                save()
+                setNote("cycle done, starting a new one...")
+                task.wait(2)
             end
         else
             httpFails = 0
-            setNote("Hopping... (" .. State.scanned .. " scanned)")
+            setNote("hopping... (" .. State.scanned .. " scanned)")
             task.wait(CONFIG.HopDelay)
             tp(id)
             local t = os.clock()
@@ -354,112 +346,50 @@ local function hopLoop()
     end
 end
 
+-- يفحص السيرفر الحالي: لو لقى الشجرة يقف ويروحلها، وإلا يكمل hop
 local function runScan()
-    scanHere()
-    if State.phase == "scan" then hopLoop() end
-end
-
-local function beginScan()
-    State.found, State.done, State.visited, State.pool, State.scanned = {}, {}, {}, {}, 0
-    State.phase = "scan"
-    save()
-    task.spawn(runScan)
-end
-
--- بيعمل تيليبورت للشجرة (أقرب شجرة مطابقة للحجم المختار)
-local function teleportToTree(r)
-    local char = LP.Character
-    local t0 = os.clock()
-    while (not char or not char:FindFirstChild("HumanoidRootPart")) and os.clock() - t0 < 15 do
-        task.wait(0.5)
-        char = LP.Character
-    end
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then return false end
-
-    local best, bestDist, bestBase
-    for _, t in ipairs(r.trees) do
-        if (State.size == "all" or t.size == State.size) and t.model.Parent then
-            -- قاعدة الجذع = أوطى WoodSection
-            local base
-            for _, c in ipairs(t.model:GetChildren()) do
-                if c.Name == "WoodSection" and c:IsA("BasePart") then
-                    if not base or c.Position.Y < base.Position.Y then base = c end
-                end
-            end
-            if base then
-                local d = (base.Position - root.Position).Magnitude
-                if not bestDist or d < bestDist then
-                    best, bestDist, bestBase = t, d, base
-                end
-            end
-        end
-    end
-    if not best then return false end
-
-    local pos = bestBase.Position + Vector3.new(best.thick / 2 + 4, 3, 0)
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.CFrame = CFrame.new(pos, bestBase.Position)
-    return true
-end
-
-local goVisit
-local function verifyHere()
-    setNote("Verifying tree here...")
+    State.visited[JOB] = true
+    setNote("checking this server...")
     local r = scanCurrent()
-    local n = r.small + r.medium + r.large
-    if n > 0 then
+    if State.phase ~= "scan" then return end
+    State.scanned += 1
+    if matchCount(r) > 0 then
+        State.phase = "found"
+        State.hits += 1
+        save()
         local ok = teleportToTree(r)
-        setNote(("Tree HERE%s small:%d medium:%d large:%d (max thick %.1f)")
+        setNote(("TREE FOUND%s\nsmall:%d medium:%d large:%d (max thick %.1f)\npress START to keep hopping")
             :format(ok and " - teleported!" or "!", r.small, r.medium, r.large, r.maxThick))
-    else
-        setNote("Tree is gone here.")
-        if CONFIG.AutoSkipGone then
-            task.wait(1.5)
-            local q = queue()
-            if #q > 0 then goVisit(q[1]) else beginScan() end
-        end
+        return
     end
-end
-
-goVisit = function(e)
-    State.phase = "visit"
-    State.done[e.id] = true
     save()
-    if e.id == JOB then
-        task.spawn(verifyHere)
-    else
-        setNote("Joining next server...")
-        tp(e.id)
-        task.spawn(function()
-            local t = os.clock()
-            while os.clock() - t < CONFIG.TeleportTimeout and not tpFailed do task.wait(0.5) end
-            if tpFailed or os.clock() - t >= CONFIG.TeleportTimeout then
-                setNote("Join failed (server full/closed). Press Start for next.")
-            end
-        end)
-    end
+    refresh()
+    hopLoop()
 end
 
 ---------------------------------------------------------------- BUTTONS
 button("START", 8, 152, 214, 34, Color3.fromRGB(40, 160, 80), function()
     if State.phase == "scan" then return end
-    local q = queue()
-    if #q > 0 then goVisit(q[1]) else beginScan() end
-end)
-
-button("STOP", 8, 192, 105, 30, Color3.fromRGB(190, 120, 30), function()
-    if State.phase == "scan" then
-        State.phase = (#queue() > 0) and "ready" or "idle"
-        save()
-        setNote("Stopped.")
+    local wasFound = State.phase == "found"
+    State.phase = "scan"
+    save()
+    if wasFound then
+        task.spawn(hopLoop)   -- السيرفر ده اتفحص خلاص، كمّل hop
+    else
+        task.spawn(runScan)
     end
 end)
 
-button("RESET", 117, 192, 105, 30, Color3.fromRGB(180, 50, 50), function()
-    State.phase, State.found, State.done, State.visited, State.pool, State.scanned = "idle", {}, {}, {}, {}, 0
+button("STOP", 8, 192, 105, 30, Color3.fromRGB(190, 120, 30), function()
+    State.phase = "idle"
     save()
-    setNote("Reset.")
+    setNote("stopped.")
+end)
+
+button("RESET", 117, 192, 105, 30, Color3.fromRGB(180, 50, 50), function()
+    State.phase, State.visited, State.pool, State.scanned, State.hits = "idle", {}, {}, 0, 0
+    save()
+    setNote("reset.")
 end)
 
 ---------------------------------------------------------------- BOOT
@@ -468,6 +398,10 @@ refresh()
 
 if State.phase == "scan" then
     task.spawn(runScan)
-elseif State.phase == "visit" then
-    task.spawn(verifyHere)
+elseif State.phase == "found" then
+    setNote("tree was found earlier. press START to keep hopping")
 end
+
+]==]
+local f,e=loadstring(S)
+if f then f(S) else warn(e) end
