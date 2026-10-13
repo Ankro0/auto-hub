@@ -18,6 +18,7 @@ local CheckInterval = 0.3
 local TeleportRetries = 3
 local RegionWait = 5      -- seconds to wait for TreeRegion to load
 local SearchWindow = 1.5    -- seconds to keep looking for the tree after it loads
+local MaxServerPlayers = 4  -- only hop to servers with this many players or fewer
 local MaxPages = 8       -- server list pages to scan
 local STATE_FILE = "BlackTreeFinder.json"
 
@@ -62,6 +63,7 @@ pcall(function()
         State.visited = type(d.visited) == "table" and d.visited or {}
     end
 end)
+if not State.running then State.queue = {} State.visited = {} end
 State.visited[game.JobId] = true
 
 ------------------------------------------------------------------
@@ -184,6 +186,7 @@ local function scanServers(setStatus)
     local cursor = nil
     local pages = 0
     local retries = 0
+    local done = false
     local base = "https://games.roblox.com/v1/games/"
         .. game.PlaceId .. "/servers/Public"
 
@@ -203,11 +206,13 @@ local function scanServers(setStatus)
 
             if ok and type(data) == "table" and data.data then
                 for _, s in ipairs(data.data) do
-                    if s.id ~= game.JobId
-                        and not State.visited[s.id]
-                        and s.playing and s.maxPlayers
-                        and s.playing < s.maxPlayers - 1 then
-                        table.insert(list, s.id)
+                    if s.playing and s.maxPlayers then
+                        if s.playing > MaxServerPlayers then
+                            done = true -- list is sorted by players (asc), the rest are bigger
+                        elseif s.id ~= game.JobId
+                            and s.playing < s.maxPlayers then
+                            table.insert(list, s.id)
+                        end
                     end
                 end
                 cursor = data.nextPageCursor
@@ -224,7 +229,7 @@ local function scanServers(setStatus)
         end
 
         task.wait(0.2)
-    until not cursor or pages >= MaxPages
+    until not cursor or done or pages >= MaxPages
 
     return list
 end
@@ -248,6 +253,11 @@ local function hopNext(setStatus)
                 setStatus("No new servers, retrying...")
                 task.wait(5)
             else
+                for i = #list, 2, -1 do
+                    local j = math.random(i)
+                    list[i], list[j] = list[j], list[i]
+                end
+                State.visited = { [game.JobId] = true }
                 State.queue = list
                 saveState()
             end
