@@ -1,3 +1,6 @@
+-- Black Tree Finder | auto hop.lua
+-- Put this file in your executor's autoexec folder.
+local SRC = [==[
 -- Black Tree Finder | GUI (fixed)
 -- Press START once: scans servers, joins them one by one, stops when it reaches a black tree.
 
@@ -11,11 +14,11 @@ local HttpService = game:GetService("HttpService")
 
 local Player = Players.LocalPlayer
 local Busy = false
-local CheckInterval = 1.0
+local CheckInterval = 0.3
 local TeleportRetries = 3
-local RegionWait = 8      -- seconds to wait for TreeRegion to load
-local SearchWindow = 3    -- seconds to keep looking for the tree after it loads
-local MaxPages = 10       -- server list pages to scan
+local RegionWait = 5      -- seconds to wait for TreeRegion to load
+local SearchWindow = 1.5    -- seconds to keep looking for the tree after it loads
+local MaxPages = 8       -- server list pages to scan
 local STATE_FILE = "BlackTreeFinder.json"
 
 ------------------------------------------------------------------
@@ -114,7 +117,7 @@ local function searchTree()
         if not State.running then return nil end
         local model, wood = findBlackTree()
         if model then return model, wood end
-        task.wait(0.5)
+        task.wait(0.25)
     until os.clock() - t0 >= SearchWindow
 
     return nil
@@ -210,10 +213,17 @@ local function scanServers(setStatus)
             cursor = nil
         end
 
-        task.wait(0.4)
+        task.wait(0.2)
     until not cursor or pages >= MaxPages
 
     return list
+end
+
+local function queueSelf()
+    if type(queue_on_teleport) == "function" and type(readfile) == "function" then
+        pcall(queue_on_teleport,
+            'local f = loadstring(readfile("BlackTreeFinder_src.lua")) if f then f() end')
+    end
 end
 
 local function hopNext(setStatus)
@@ -245,6 +255,7 @@ local function hopNext(setStatus)
                 failed = true
             end)
 
+            queueSelf()
             local ok = pcall(function()
                 TeleportService:TeleportToPlaceInstance(
                     game.PlaceId, id, Player
@@ -259,7 +270,7 @@ local function hopNext(setStatus)
             end
             conn:Disconnect()
 
-            task.wait(1)
+            task.wait(0.3)
         end
     end
 end
@@ -439,3 +450,11 @@ task.spawn(function()
         task.wait(CheckInterval)
     end
 end)
+
+]==]
+
+if type(writefile) == "function" then
+    pcall(writefile, "BlackTreeFinder_src.lua", SRC)
+end
+local f, err = loadstring(SRC)
+if f then f() else warn("[BlackTree] loadstring failed:", err) end
