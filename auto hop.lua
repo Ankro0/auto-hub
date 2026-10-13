@@ -52,6 +52,16 @@ local function loadState()
 end
 
 loadState()
+pcall(function()
+    local td = TeleportService:GetLocalPlayerTeleportData()
+    if type(td) == "table" and type(td.BlackTree) == "table" then
+        local d = td.BlackTree
+        State.running = d.running == true
+        State.size = d.size or State.size
+        State.queue = type(d.queue) == "table" and d.queue or {}
+        State.visited = type(d.visited) == "table" and d.visited or {}
+    end
+end)
 State.visited[game.JobId] = true
 
 ------------------------------------------------------------------
@@ -258,7 +268,7 @@ local function hopNext(setStatus)
             queueSelf()
             local ok = pcall(function()
                 TeleportService:TeleportToPlaceInstance(
-                    game.PlaceId, id, Player
+                    game.PlaceId, id, Player, nil, { BlackTree = State }
                 )
             end)
             if not ok then failed = true end
@@ -398,7 +408,12 @@ makeButton("STOP", 164, 185, 140, 42, Color3.fromRGB(190, 60, 70), function()
     setStatus("STOPPED")
 end)
 
-label(main, "Scans servers, joins one by one, stops at the tree",
+local function yn(v) return v and "OK" or "NO" end
+local diag = "FILES:" .. yn(canFile)
+    .. "  QUEUE:" .. yn(type(queue_on_teleport) == "function")
+    .. "  LOADSTRING:" .. yn(type(loadstring) == "function")
+print("[BlackTree] " .. diag)
+label(main, diag,
     UDim2.fromOffset(12, 244), UDim2.new(1, -24, 0, 30),
     Color3.fromRGB(145, 150, 165), 10)
 
