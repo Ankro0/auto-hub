@@ -1,106 +1,76 @@
-
--- ==========================================
--- Black Tree Finder | Auto Hop
--- ==========================================
-
-local Players = game:GetService("Players")
-local TeleportService = game:GetService("TeleportService")
-local HttpService = game:GetService("HttpService")
-local Workspace = game:GetService("Workspace")
-local Player = Players.LocalPlayer
-
-local URL = "https://raw.githubusercontent.com/Ankro0/auto-hub/refs/heads/main/auto%20hop.lua"
-
+-- Black Tree Finder + Server Hop
+-- Config
 local Config = {
     Running = true,
     SizeOption = "all",
     CheckInterval = 1,
     HopCooldown = 5,
-    TargetColor = Color3.fromRGB(0, 0, 0),
+    TeleportRetries = 3
 }
 
--- إعادة التشغيل بعد الانتقال
-local queue = queue_on_teleport
-    or (syn and syn.queue_on_teleport)
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local Workspace = game:GetService("Workspace")
 
-if queue then
-    pcall(function()
-        queue('loadstring(game:HttpGet("' .. URL .. '", true))()')
-    end)
+local Player = Players.LocalPlayer
+
+local function GetRoot()
+    local character = Player.Character
+    return character and character:FindFirstChild("HumanoidRootPart")
 end
-
--- إزالة الواجهة القديمة
-pcall(function()
-    local gui = Player.PlayerGui:FindFirstChild("TreeAutoHopUI")
-    if gui then gui:Destroy() end
-end)
-
--- ==========================================
--- فحص لون الجذع
--- ==========================================
 
 local function IsBlack(part)
     if not part or not part:IsA("BasePart") then
         return false
     end
 
-    return part.BrickColor.Name == "Really black"
-        or (
-            part.Color.R == 0
-            and part.Color.G == 0
-            and part.Color.B == 0
-        )
+    local color = part.Color
+    return (
+        part.BrickColor.Name == "Really black"
+        or (color.R < 0.05 and color.G < 0.05 and color.B < 0.05)
+    )
 end
 
-local function GetTreeSize(model)
-    local ok, extents = pcall(function()
-        return model:GetExtentsSize()
-    end)
-
-    if not ok then return "small" end
-
-    local magnitude = extents.Magnitude
-
-    if magnitude > 40 then
-        return "large"
-    elseif magnitude > 20 then
-        return "medium"
+local function MatchesSize(tree)
+    if Config.SizeOption == "all" then
+        return true
     end
 
-    return "small"
+    local ok, size = pcall(function()
+        return tree:GetExtentsSize().Magnitude
+    end)
+
+    if not ok then
+        return false
+    end
+
+    if Config.SizeOption == "large" then
+        return size > 40
+    elseif Config.SizeOption == "medium" then
+        return size > 20 and size <= 40
+    elseif Config.SizeOption == "small" then
+        return size <= 20
+    end
+
+    return true
 end
 
 local function FindBlackTree()
-    for _, model in ipairs(Workspace:GetDescendants()) do
-        if not Config.Running then
-            return nil
-        end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and MatchesSize(obj) then
+            local name = obj.Name:lower()
+            local isTree = name:find("tree") ~= nil
+            local wood = obj:FindFirstChild("WoodSection", true)
 
-        if model:IsA("Model") then
-            local name = model.Name:lower()
+            if wood and IsBlack(wood) then
+                return obj
+            end
 
-            local looksLikeTree =
-                name:find("tree")
-                or model:FindFirstChild("TreeClass", true) ~= nil
-                or model:FindFirstChild("WoodSection", true) ~= nil
-
-            if looksLikeTree then
-                local blackWood = false
-
-                for _, part in ipairs(model:GetDescendants()) do
-                    if part.Name == "WoodSection"
-                        and IsBlack(part) then
-                        blackWood = true
-                        break
-                    end
-                end
-
-                if blackWood then
-                    local size = GetTreeSize(model)
-
-                    if Config.SizeOption == "all"
-                        or Config.SizeOption == size then
-                        return model
+            if isTree then
+                for _, part in ipairs(obj:GetDescendants()) do
+                    if part:IsA("BasePart") and IsBlack(part) then
+                        return obj
                     end
                 end
             end
@@ -110,16 +80,9 @@ local function FindBlackTree()
     return nil
 end
 
--- ==========================================
--- الانتقال للشجرة
--- ==========================================
-
 local function TeleportToTree(tree)
-    local character = Player.Character
-    local root = character
-        and character:FindFirstChild("HumanoidRootPart")
-
-    if not root or not tree.Parent then
+    local root = GetRoot()
+    if not root or not tree or not tree.Parent then
         return false
     end
 
@@ -127,184 +90,174 @@ local function TeleportToTree(tree)
         return tree:GetPivot()
     end)
 
-    if not ok then return false end
-
-    root.CFrame = CFrame.new(
-        pivot.Position + Vector3.new(0, 5, 0)
-    )
-
-    return true
-end
-
--- ==========================================
--- الانتقال لسيرفر آخر
--- ==========================================
-
-local function HopServer()
-    local endpoint = string.format(
-        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100",
-        game.PlaceId
-    )
-
-    local ok, body = pcall(function()
-        return game:HttpGet(endpoint)
-    end)
-
     if not ok then
-        warn("تعذر جلب قائمة السيرفرات")
         return false
     end
 
-    local decodedOK, data = pcall(function()
-        return HttpService:JSONDecode(body)
-    end)
+    local target = pivot.Position + Vector3.new(0, 5, 0)
 
-    if not decodedOK or not data.data then
-        warn("استجابة السيرفرات غير صالحة")
-        return false
-    end
+    for attempt = 1, Config.TeleportRetries do
+        root = GetRoot()
+        if not root then
+            return false
+        end
 
-    local candidates = {}
+        pcall(function()
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.CFrame = CFrame.new(target)
+        end)
 
-    for _, server in ipairs(data.data) do
-        if server.id ~= game.JobId
-            and server.playing < server.maxPlayers then
-            table.insert(candidates, server.id)
+        task.wait(0.6)
+
+        root = GetRoot()
+        if root and (root.Position - target).Magnitude < 10 then
+            print("Teleport confirmed.")
+            return true
         end
     end
 
-    if #candidates == 0 then
-        warn("مفيش سيرفر متاح في الصفحة دي")
+    warn("Teleport failed after retries.")
+    return false
+end
+
+local function HopServer()
+    task.wait(Config.HopCooldown)
+
+    local ok, result = pcall(function()
+        local url = "https://games.roblox.com/v1/games/"
+            .. game.PlaceId
+            .. "/servers/Public?sortOrder=Asc&limit=100"
+
+        return HttpService:JSONDecode(game:HttpGet(url))
+    end)
+
+    if not ok or not result or not result.data then
+        warn("Could not retrieve servers.")
         return false
     end
 
-    local target = candidates[math.random(#candidates)]
+    for _, server in ipairs(result.data) do
+        if server.id ~= game.JobId
+            and server.playing < server.maxPlayers then
 
-    local tpOK, err = pcall(function()
-        TeleportService:TeleportToPlaceInstance(
-            game.PlaceId,
-            target,
-            Player
-        )
-    end)
+            local success = pcall(function()
+                TeleportService:TeleportToPlaceInstance(
+                    game.PlaceId,
+                    server.id,
+                    Player
+                )
+            end)
 
-    if not tpOK then
-        warn("فشل الانتقال: " .. tostring(err))
+            if success then
+                return true
+            end
+        end
     end
 
-    return tpOK
+    return false
 end
 
--- ==========================================
--- الواجهة
--- ==========================================
-
+-- UI
 local gui = Instance.new("ScreenGui")
-gui.Name = "TreeAutoHopUI"
+gui.Name = "BlackTreeFinder"
 gui.ResetOnSpawn = false
-gui.Parent = Player:WaitForChild("PlayerGui")
+
+pcall(function()
+    gui.Parent = game:GetService("CoreGui")
+end)
+
+if not gui.Parent then
+    gui.Parent = Player:WaitForChild("PlayerGui")
+end
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(260, 220)
-frame.Position = UDim2.new(0.5, -130, 0.5, -110)
+frame.Size = UDim2.new(0, 240, 0, 230)
+frame.Position = UDim2.new(0.05, 0, 0.3, 0)
 frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 frame.Active = true
 frame.Draggable = true
 frame.Parent = gui
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 32)
-title.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-title.Text = "Black Tree Auto Hop"
+title.Size = UDim2.new(1, 0, 0, 35)
+title.BackgroundTransparency = 1
+title.Text = "Black Tree Finder"
 title.TextColor3 = Color3.new(1, 1, 1)
+title.TextScaled = true
 title.Parent = frame
 
 local status = Instance.new("TextLabel")
-status.Position = UDim2.fromOffset(10, 38)
-status.Size = UDim2.new(1, -20, 0, 45)
+status.Position = UDim2.new(0, 5, 0, 40)
+status.Size = UDim2.new(1, -10, 0, 30)
 status.BackgroundTransparency = 1
+status.Text = "Status: Ready"
 status.TextColor3 = Color3.new(1, 1, 1)
-status.TextWrapped = true
-status.Text = "جاري البحث..."
+status.TextScaled = true
 status.Parent = frame
 
-local sizes = {"small", "medium", "large", "all"}
-local buttons = {}
-
-for i, size in ipairs(sizes) do
+local function MakeButton(text, x, y, callback)
     local button = Instance.new("TextButton")
-    button.Size = UDim2.fromOffset(56, 30)
-    button.Position = UDim2.fromOffset(8 + (i - 1) * 62, 92)
-    button.Text = size
+    button.Position = UDim2.new(0, x, 0, y)
+    button.Size = UDim2.new(0, 70, 0, 30)
+    button.Text = text
+    button.TextScaled = true
     button.Parent = frame
-
-    button.MouseButton1Click:Connect(function()
-        Config.SizeOption = size
-
-        for _, b in pairs(buttons) do
-            b.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-        end
-
-        button.BackgroundColor3 = Color3.fromRGB(0, 120, 200)
-    end)
-
-    buttons[i] = button
+    button.MouseButton1Click:Connect(callback)
+    return button
 end
 
-buttons[4].BackgroundColor3 = Color3.fromRGB(0, 120, 200)
-
-local toggle = Instance.new("TextButton")
-toggle.Size = UDim2.new(1, -20, 0, 38)
-toggle.Position = UDim2.fromOffset(10, 140)
-toggle.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
-toggle.TextColor3 = Color3.new(1, 1, 1)
-toggle.Text = "Stop"
-toggle.Parent = frame
-
-toggle.MouseButton1Click:Connect(function()
-    Config.Running = not Config.Running
-    toggle.Text = Config.Running and "Stop" or "Start"
-    status.Text = Config.Running and "جاري البحث..." or "تم الإيقاف"
+MakeButton("Small", 5, 80, function()
+    Config.SizeOption = "small"
+    status.Text = "Size: Small"
 end)
 
--- ==========================================
--- التشغيل التلقائي
--- ==========================================
+MakeButton("Medium", 85, 80, function()
+    Config.SizeOption = "medium"
+    status.Text = "Size: Medium"
+end)
 
+MakeButton("Large", 165, 80, function()
+    Config.SizeOption = "large"
+    status.Text = "Size: Large"
+end)
+
+MakeButton("All", 5, 120, function()
+    Config.SizeOption = "all"
+    status.Text = "Size: All"
+end)
+
+MakeButton("Start", 85, 120, function()
+    Config.Running = true
+    status.Text = "Status: Running"
+end)
+
+MakeButton("Stop", 165, 120, function()
+    Config.Running = false
+    status.Text = "Status: Stopped"
+end)
+
+-- Main loop
 task.spawn(function()
-    while gui.Parent do
-        if Config.Running then
-            status.Text = "بيفحص الشجر الأسود..."
-
-            local ok, tree = pcall(FindBlackTree)
-
-            if not Config.Running then
-                task.wait(0.2)
-
-            elseif ok and tree then
-                status.Text = "لقينا شجرة سودا!"
-
-                if TeleportToTree(tree) then
-                    status.Text = "وصلت للشجرة"
-                else
-                    status.Text = "الشجرة اختفت، هكمل بحث"
-                end
-
-                task.wait(2)
-
-            else
-                status.Text = "مفيش شجرة مطابقة، بغيّر السيرفر..."
-                task.wait(Config.HopCooldown)
-
-                if Config.Running then
-                    HopServer()
-                    task.wait(3)
-                end
-            end
-        else
-            task.wait(0.5)
+    while task.wait(Config.CheckInterval) do
+        if not Config.Running then
+            continue
         end
 
-        task.wait(Config.CheckInterval)
+        local tree = FindBlackTree()
+
+        if tree then
+            status.Text = "Teleporting..."
+            local arrived = TeleportToTree(tree)
+
+            if arrived then
+                status.Text = "Reached tree"
+                task.wait(2)
+            else
+                status.Text = "Retrying..."
+            end
+        else
+            status.Text = "No tree - hopping"
+            HopServer()
+        end
     end
 end)
