@@ -37,12 +37,15 @@ local function saveState()
     end)
 end
 
+local stateFromFile = false
+
 local function loadState()
     if not canFile then return end
     pcall(function()
         if isfile(STATE_FILE) then
             local d = HttpService:JSONDecode(readfile(STATE_FILE))
             if type(d) == "table" then
+                stateFromFile = true
                 State.running = d.running == true
                 State.size = d.size or "all"
                 State.treeClass = (type(d.treeClass) == "string" and d.treeClass ~= "") and d.treeClass or State.treeClass
@@ -54,7 +57,8 @@ local function loadState()
 end
 
 loadState()
-pcall(function()
+-- teleport data is only a fallback: the saved file (STOP/START) always wins
+if not stateFromFile then pcall(function()
     local td = TeleportService:GetLocalPlayerTeleportData()
     if type(td) == "table" and type(td.BlackTree) == "table" then
         local d = td.BlackTree
@@ -64,7 +68,7 @@ pcall(function()
         State.queue = type(d.queue) == "table" and d.queue or {}
         State.visited = type(d.visited) == "table" and d.visited or {}
     end
-end)
+end) end
 if not State.running then State.queue = {} State.visited = {} end
 State.visited[game.JobId] = true
 
