@@ -25,7 +25,7 @@ local STATE_FILE = "BlackTreeFinder.json"
 ------------------------------------------------------------------
 -- State (saved to file so it survives server hops)
 ------------------------------------------------------------------
-local State = { running = false, size = "all", queue = {}, visited = {} }
+local State = { running = false, size = "all", treeClass = "Spooky", queue = {}, visited = {} }
 local canFile = type(writefile) == "function"
     and type(readfile) == "function"
     and type(isfile) == "function"
@@ -45,6 +45,7 @@ local function loadState()
             if type(d) == "table" then
                 State.running = d.running == true
                 State.size = d.size or "all"
+                State.treeClass = (type(d.treeClass) == "string" and d.treeClass ~= "") and d.treeClass or State.treeClass
                 State.queue = type(d.queue) == "table" and d.queue or {}
                 State.visited = type(d.visited) == "table" and d.visited or {}
             end
@@ -59,6 +60,7 @@ pcall(function()
         local d = td.BlackTree
         State.running = d.running == true
         State.size = d.size or State.size
+        State.treeClass = (type(d.treeClass) == "string" and d.treeClass ~= "") and d.treeClass or State.treeClass
         State.queue = type(d.queue) == "table" and d.queue or {}
         State.visited = type(d.visited) == "table" and d.visited or {}
     end
@@ -81,7 +83,17 @@ local function getRoot()
     return character and character:FindFirstChild("HumanoidRootPart")
 end
 
+local function classMatches(v)
+    v = string.lower(tostring(v))
+    local t = string.lower(State.treeClass)
+    if t == "both" then
+        return v == "spooky" or v == "spookyneon"
+    end
+    return v == t
+end
+
 local lastWoodCount = 0
+local lastClasses = ""
 
 local function isBlack(part)
     if not (part and part:IsA("BasePart")) then return false end
@@ -109,6 +121,39 @@ local function findBlackTree()
     local region = Workspace:FindFirstChild("TreeRegion")
     if not region then return nil end
 
+    -- Mode A: search by TreeClass value (typed in the box)
+    if State.treeClass ~= "" then
+        local target = string.lower(State.treeClass)
+        local count, seen, seenList = 0, {}, {}
+        local foundModel, foundWood
+
+        for _, obj in ipairs(region:GetDescendants()) do
+            if obj.Name == "TreeClass" and obj:IsA("ValueBase") then
+                count = count + 1
+                local v = tostring(obj.Value)
+                if not seen[v] then
+                    seen[v] = true
+                    table.insert(seenList, v)
+                end
+                if not foundModel and classMatches(v) then
+                    local model = obj.Parent
+                    if model and matchesSize(model) then
+                        local part = model:FindFirstChild("WoodSection", true)
+                        if not (part and part:IsA("BasePart")) then
+                            part = model:FindFirstChildWhichIsA("BasePart", true)
+                        end
+                        if part then foundModel, foundWood = model, part end
+                    end
+                end
+            end
+        end
+
+        lastWoodCount = count
+        lastClasses = table.concat(seenList, ", ")
+        return foundModel, foundWood
+    end
+
+    -- Mode B (TreeClass box empty): search by black color
     local woods = 0
     local foundModel, foundWood
 
@@ -320,7 +365,7 @@ gui.Parent = playerGui
 print("[BlackTree] GUI created")
 
 local main = Instance.new("Frame")
-main.Size = UDim2.fromOffset(320, 300)
+main.Size = UDim2.fromOffset(320, 320)
 main.Position = UDim2.new(0.5, -160, 0.35, 0)
 main.BackgroundColor3 = Color3.fromRGB(20, 23, 32)
 main.BorderSizePixel = 0
@@ -414,7 +459,36 @@ for i, name in ipairs(options) do
 end
 refreshSizes()
 
-makeButton("START", 16, 185, 140, 42, Color3.fromRGB(35, 160, 100), function()
+local classButtons = {}
+local classOptions = {
+    { "SPOOKY", "Spooky" },
+    { "NEON", "SpookyNeon" },
+    { "BOTH", "Both" },
+}
+
+local function refreshClasses()
+    for value, button in pairs(classButtons) do
+        button.BackgroundColor3 = (string.lower(value) == string.lower(State.treeClass))
+            and Color3.fromRGB(65, 105, 210)
+            or Color3.fromRGB(43, 47, 60)
+    end
+end
+
+for i, opt in ipairs(classOptions) do
+    classButtons[opt[2]] = makeButton(
+        opt[1],
+        16 + (i - 1) * 98, 170, 92, 32,
+        Color3.fromRGB(43, 47, 60),
+        function()
+            State.treeClass = opt[2]
+            saveState()
+            refreshClasses()
+        end
+    )
+end
+refreshClasses()
+
+makeButton("START", 16, 218, 140, 42, Color3.fromRGB(35, 160, 100), function()
     if State.running then return end
     State.running = true
     State.queue = {}
@@ -423,7 +497,7 @@ makeButton("START", 16, 185, 140, 42, Color3.fromRGB(35, 160, 100), function()
     setStatus("RUNNING")
 end)
 
-makeButton("STOP", 164, 185, 140, 42, Color3.fromRGB(190, 60, 70), function()
+makeButton("STOP", 164, 218, 140, 42, Color3.fromRGB(190, 60, 70), function()
     State.running = false
     State.queue = {}
     saveState()
@@ -436,7 +510,7 @@ local diag = "FILES:" .. yn(canFile)
     .. "  LOADSTRING:" .. yn(type(loadstring) == "function")
 print("[BlackTree] " .. diag)
 label(main, diag,
-    UDim2.fromOffset(12, 244), UDim2.new(1, -24, 0, 30),
+    UDim2.fromOffset(12, 275), UDim2.new(1, -24, 0, 30),
     Color3.fromRGB(145, 150, 165), 10)
 
 if State.running then
@@ -464,7 +538,7 @@ local function step()
         setStatus("TELEPORT FAILED - HOPPING")
     else
         setStatus("NO TREE (" .. lastWoodCount .. " woods) - HOPPING")
-        print("[BlackTree] no black tree, woods scanned:", lastWoodCount)
+        print("[BlackTree] no tree found. scanned:", lastWoodCount, "classes:", lastClasses)
     end
 
     hopNext(setStatus)
