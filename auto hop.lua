@@ -1,6 +1,7 @@
+-- Black Tree Finder | GUI (fixed)
+-- Press START once: scans servers, joins them one by one, stops when it reaches a black tree.
 
--- Black Tree Finder | GUI
--- Starts OFF. Only START begins the loop.
+if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -8,42 +9,79 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 
 local Player = Players.LocalPlayer
-local Running = false
 local Busy = false
-local SizeOption = "all"
 local CheckInterval = 1.0
-local HopCooldown = 4
 local TeleportRetries = 3
+local RegionWait = 8      -- seconds to wait for TreeRegion to load
+local SearchWindow = 3    -- seconds to keep looking for the tree after it loads
+local MaxPages = 10       -- server list pages to scan
+local STATE_FILE = "BlackTreeFinder.json"
 
+------------------------------------------------------------------
+-- State (saved to file so it survives server hops)
+------------------------------------------------------------------
+local State = { running = false, size = "all", queue = {}, visited = {} }
+local canFile = type(writefile) == "function"
+    and type(readfile) == "function"
+    and type(isfile) == "function"
+
+local function saveState()
+    if not canFile then return end
+    pcall(function()
+        writefile(STATE_FILE, HttpService:JSONEncode(State))
+    end)
+end
+
+local function loadState()
+    if not canFile then return end
+    pcall(function()
+        if isfile(STATE_FILE) then
+            local d = HttpService:JSONDecode(readfile(STATE_FILE))
+            if type(d) == "table" then
+                State.running = d.running == true
+                State.size = d.size or "all"
+                State.queue = type(d.queue) == "table" and d.queue or {}
+                State.visited = type(d.visited) == "table" and d.visited or {}
+            end
+        end
+    end)
+end
+
+loadState()
+State.visited[game.JobId] = true
+
+------------------------------------------------------------------
 -- Remove previous GUI
+------------------------------------------------------------------
 local playerGui = Player:WaitForChild("PlayerGui")
 local old = playerGui:FindFirstChild("BlackTreeFinderUI")
 if old then old:Destroy() end
 
+------------------------------------------------------------------
+-- Helpers
+------------------------------------------------------------------
 local function getRoot()
     local character = Player.Character
     return character and character:FindFirstChild("HumanoidRootPart")
 end
 
 local function isBlack(part)
-    return part
+    return part ~= nil
         and part:IsA("BasePart")
         and part.BrickColor.Name == "Really black"
 end
 
 local function matchesSize(model)
-    if SizeOption == "all" then return true end
+    if State.size == "all" then return true end
 
     local ok, size = pcall(function()
         return model:GetExtentsSize().Magnitude
     end)
     if not ok then return false end
 
-    if SizeOption == "small" then return size <= 20 end
-    if SizeOption == "medium" then
-        return size > 20 and size <= 40
-    end
-    if SizeOption == "large" then return size > 40 end
+    if State.size == "small" then return size <= 20 end
+    if State.size == "medium" then return size > 20 and size <= 40 end
+    if State.size == "large" then return size > 40 end
 
     return true
 end
@@ -64,16 +102,32 @@ local function findBlackTree()
     return nil
 end
 
+-- Waits for the map to load, then looks for the tree for a few seconds
+local function searchTree()
+    local region = Workspace:FindFirstChild("TreeRegion")
+        or Workspace:WaitForChild("TreeRegion", RegionWait)
+    if not region then return nil end
+
+    local t0 = os.clock()
+    repeat
+        if not State.running then return nil end
+        local model, wood = findBlackTree()
+        if model then return model, wood end
+        task.wait(0.5)
+    until os.clock() - t0 >= SearchWindow
+
+    return nil
+end
+
 local function teleportToTree(model, wood)
-    for attempt = 1, TeleportRetries do
-        if not Running then return false end
+    for _ = 1, TeleportRetries do
+        if not State.running then return false end
 
         local root = getRoot()
         if not root or not model.Parent or not wood.Parent then
             return false
         end
 
-        -- Move beside the wood section, above the ground
         local target = wood.Position + Vector3.new(0, 5, 0)
 
         local ok = pcall(function()
@@ -83,8 +137,7 @@ local function teleportToTree(model, wood)
         task.wait(0.7)
 
         root = getRoot()
-        if ok and root
-            and (root.Position - target).Magnitude < 10 then
+        if ok and root and (root.Position - target).Magnitude < 10 then
             return true
         end
     end
@@ -92,58 +145,134 @@ local function teleportToTree(model, wood)
     return false
 end
 
-local function hopServer(setStatus)
-    if not Running then return false end
-    setStatus("Searching for another server...")
+------------------------------------------------------------------
+-- HTTP + server hopping
+------------------------------------------------------------------
+local function httpGet(url)
+    local req = (syn and syn.request) or request or http_request
+        or (http and http.request)
 
-    task.wait(HopCooldown)
-    if not Running then return false end
-
-    local url = "https://games.roblox.com/v1/games/"
-        .. game.PlaceId
-        .. "/servers/Public?sortOrder=Asc&limit=100"
-
-    local ok, data = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet(url))
-    end)
-
-    if not ok or not data or not data.data then
-        setStatus("Hop failed: HTTP request error")
-        return false
-    end
-
-    for _, server in ipairs(data.data) do
-        if not Running then return false end
-
-        if server.id ~= game.JobId
-            and server.playing < server.maxPlayers then
-
-            setStatus("Teleporting to new server...")
-            local success, err = pcall(function()
-                TeleportService:TeleportToPlaceInstance(
-                    game.PlaceId,
-                    server.id,
-                    Player
-                )
-            end)
-
-            if success then
-                return true
-            else
-                warn("Server hop error:", err)
-            end
+    if req then
+        local ok, res = pcall(req, { Url = url, Method = "GET" })
+        if ok and res then
+            if res.StatusCode == 200 then return res.Body end
+            return nil, res.StatusCode
         end
     end
 
-    setStatus("No available server found")
-    return false
+    local ok, body = pcall(function() return game:HttpGet(url) end)
+    if ok then return body end
+    return nil, 0
 end
 
+local function scanServers(setStatus)
+    local list = {}
+    local cursor = nil
+    local pages = 0
+    local retries = 0
+    local base = "https://games.roblox.com/v1/games/"
+        .. game.PlaceId .. "/servers/Public"
+
+    repeat
+        if not State.running then return nil end
+
+        local url = base .. "?sortOrder=Asc&excludeFullGames=true&limit=100"
+        if cursor then url = url .. "&cursor=" .. cursor end
+
+        setStatus("Scanning servers... (" .. #list .. " found)")
+        local body, code = httpGet(url)
+
+        if body then
+            local ok, data = pcall(function()
+                return HttpService:JSONDecode(body)
+            end)
+
+            if ok and type(data) == "table" and data.data then
+                for _, s in ipairs(data.data) do
+                    if s.id ~= game.JobId
+                        and not State.visited[s.id]
+                        and s.playing and s.maxPlayers
+                        and s.playing < s.maxPlayers - 1 then
+                        table.insert(list, s.id)
+                    end
+                end
+                cursor = data.nextPageCursor
+            else
+                cursor = nil
+            end
+            pages = pages + 1
+        elseif code == 429 and retries < 6 then
+            retries = retries + 1
+            setStatus("Rate limited, waiting...")
+            task.wait(5)
+        else
+            cursor = nil
+        end
+
+        task.wait(0.4)
+    until not cursor or pages >= MaxPages
+
+    return list
+end
+
+local function hopNext(setStatus)
+    while State.running do
+        if #State.queue == 0 then
+            local list = scanServers(setStatus)
+            if not list then return end
+
+            if #list == 0 then
+                State.visited = { [game.JobId] = true }
+                saveState()
+                setStatus("No new servers, retrying...")
+                task.wait(5)
+            else
+                State.queue = list
+                saveState()
+            end
+        end
+
+        if State.running and #State.queue > 0 then
+            local id = table.remove(State.queue, 1)
+            State.visited[id] = true
+            saveState()
+
+            setStatus("Joining server (" .. #State.queue .. " left)")
+
+            local failed = false
+            local conn = TeleportService.TeleportInitFailed:Connect(function()
+                failed = true
+            end)
+
+            local ok = pcall(function()
+                TeleportService:TeleportToPlaceInstance(
+                    game.PlaceId, id, Player
+                )
+            end)
+            if not ok then failed = true end
+
+            local waited = 0
+            while not failed and waited < 15 and State.running do
+                task.wait(0.25)
+                waited = waited + 0.25
+            end
+            conn:Disconnect()
+
+            task.wait(1)
+        end
+    end
+end
+
+------------------------------------------------------------------
 -- GUI
+------------------------------------------------------------------
 local gui = Instance.new("ScreenGui")
 gui.Name = "BlackTreeFinderUI"
 gui.ResetOnSpawn = false
-gui.Parent = playerGui
+local parented = pcall(function()
+    gui.Parent = (gethui and gethui()) or playerGui
+end)
+if not parented or not gui.Parent then gui.Parent = playerGui end
 
 local main = Instance.new("Frame")
 main.Size = UDim2.fromOffset(320, 300)
@@ -172,24 +301,19 @@ local function label(parent, text, pos, size, color, textSize)
     obj.TextColor3 = color or Color3.new(1, 1, 1)
     obj.TextSize = textSize or 14
     obj.Font = Enum.Font.GothamMedium
+    obj.TextXAlignment = Enum.TextXAlignment.Left
     obj.Parent = parent
     return obj
 end
 
 label(main, "BLACK TREE FINDER", UDim2.fromOffset(16, 10),
-    UDim2.new(1, -32, 0, 30),
-    Color3.fromRGB(130, 170, 255), 18).TextXAlignment =
-    Enum.TextXAlignment.Left
+    UDim2.new(1, -32, 0, 30), Color3.fromRGB(130, 170, 255), 18)
 
-label(main, "AUTO TELEPORT  •  SERVER HOP",
-    UDim2.fromOffset(16, 40), UDim2.new(1, -32, 0, 20),
-    Color3.fromRGB(160, 165, 180), 10).TextXAlignment =
-    Enum.TextXAlignment.Left
+label(main, "AUTO TELEPORT  •  SERVER HOP", UDim2.fromOffset(16, 40),
+    UDim2.new(1, -32, 0, 20), Color3.fromRGB(160, 165, 180), 10)
 
-local statusLabel = label(main, "● STOPPED",
-    UDim2.fromOffset(16, 68), UDim2.new(1, -32, 0, 28),
-    Color3.fromRGB(255, 190, 90), 14)
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+local statusLabel = label(main, "● STOPPED", UDim2.fromOffset(16, 68),
+    UDim2.new(1, -32, 0, 28), Color3.fromRGB(255, 190, 90), 14)
 
 local function setStatus(text)
     if statusLabel and statusLabel.Parent then
@@ -198,9 +322,7 @@ local function setStatus(text)
 end
 
 label(main, "TREE SIZE", UDim2.fromOffset(16, 105),
-    UDim2.new(1, -32, 0, 20),
-    Color3.fromRGB(200, 205, 220), 12).TextXAlignment =
-    Enum.TextXAlignment.Left
+    UDim2.new(1, -32, 0, 20), Color3.fromRGB(200, 205, 220), 12)
 
 local function makeButton(text, x, y, w, h, color, callback)
     local b = Instance.new("TextButton")
@@ -223,11 +345,11 @@ local function makeButton(text, x, y, w, h, color, callback)
 end
 
 local sizeButtons = {}
-local options = {"small", "medium", "large", "all"}
+local options = { "small", "medium", "large", "all" }
 
 local function refreshSizes()
     for name, button in pairs(sizeButtons) do
-        button.BackgroundColor3 = name == SizeOption
+        button.BackgroundColor3 = (name == State.size)
             and Color3.fromRGB(65, 105, 210)
             or Color3.fromRGB(43, 47, 60)
     end
@@ -239,74 +361,79 @@ for i, name in ipairs(options) do
         16 + (i - 1) * 74, 130, 68, 30,
         Color3.fromRGB(43, 47, 60),
         function()
-            SizeOption = name
+            State.size = name
+            saveState()
             refreshSizes()
         end
     )
 end
 refreshSizes()
 
-local startButton = makeButton(
-    "START", 16, 185, 140, 42,
-    Color3.fromRGB(35, 160, 100),
-    function()
-        if Running then return end
-        Running = true
-        setStatus("RUNNING")
-    end
-)
+makeButton("START", 16, 185, 140, 42, Color3.fromRGB(35, 160, 100), function()
+    if State.running then return end
+    State.running = true
+    State.queue = {}
+    State.visited = { [game.JobId] = true }
+    saveState()
+    setStatus("RUNNING")
+end)
 
-local stopButton = makeButton(
-    "STOP", 164, 185, 140, 42,
-    Color3.fromRGB(190, 60, 70),
-    function()
-        Running = false
-        setStatus("STOPPED")
-    end
-)
+makeButton("STOP", 164, 185, 140, 42, Color3.fromRGB(190, 60, 70), function()
+    State.running = false
+    State.queue = {}
+    saveState()
+    setStatus("STOPPED")
+end)
 
-label(main, "Starts stopped • Hop only when no tree is found",
+label(main, "Scans servers, joins one by one, stops at the tree",
     UDim2.fromOffset(12, 244), UDim2.new(1, -24, 0, 30),
     Color3.fromRGB(145, 150, 165), 10)
 
--- Main loop: no teleport or hop before START
+if State.running then
+    setStatus("RESUMING...")
+end
+
+------------------------------------------------------------------
+-- Main loop: nothing happens until START (or resume after a hop)
+------------------------------------------------------------------
+local function step()
+    setStatus("Searching for tree...")
+    local model, wood = searchTree()
+
+    if not State.running then return end
+
+    if model and wood then
+        setStatus("TREE FOUND - TELEPORTING")
+        if teleportToTree(model, wood) then
+            State.running = false
+            State.queue = {}
+            saveState()
+            setStatus("TREE REACHED")
+            return
+        end
+        setStatus("TELEPORT FAILED - HOPPING")
+    else
+        setStatus("NO TREE - HOPPING")
+    end
+
+    hopNext(setStatus)
+end
+
 task.spawn(function()
     while gui.Parent do
-        task.wait(CheckInterval)
+        if State.running and not Busy then
+            Busy = true
 
-        if not Running or Busy then
-            continue
-        end
-
-        Busy = true
-
-        local ok, err = pcall(function()
-            local model, wood = findBlackTree()
-
-            if model and wood then
-                setStatus("TREE FOUND - TELEPORTING")
-                local arrived = teleportToTree(model, wood)
-
-                if arrived then
-                    setStatus("TREE REACHED")
-                    task.wait(2)
-                else
-                    setStatus("TELEPORT RETRY FAILED")
-                    task.wait(1)
-                end
-            else
-                setStatus("NO TREE - HOPPING")
-                hopServer(setStatus)
+            local ok, err = pcall(step)
+            if not ok then
+                warn("Black Tree Finder error:", err)
+                setStatus("ERROR - CHECK CONSOLE")
+                task.wait(2)
             end
-        end)
 
-        if not ok then
-            warn("Black Tree Finder error:", err)
-            setStatus("ERROR - CHECK CONSOLE")
-            task.wait(2)
+            Busy = false
         end
 
-        Busy = false
+        task.wait(CheckInterval)
     end
 end)
-```
