@@ -1,78 +1,62 @@
--- Black Tree Finder + Server Hop
--- Config
-local Config = {
-    Running = true,
-    SizeOption = "all",
-    CheckInterval = 1,
-    HopCooldown = 5,
-    TeleportRetries = 3
-}
+
+-- Black Tree Finder | GUI
+-- Starts OFF. Only START begins the loop.
 
 local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
-local Workspace = game:GetService("Workspace")
 
 local Player = Players.LocalPlayer
+local Running = false
+local Busy = false
+local SizeOption = "all"
+local CheckInterval = 1.0
+local HopCooldown = 4
+local TeleportRetries = 3
 
-local function GetRoot()
+-- Remove previous GUI
+local playerGui = Player:WaitForChild("PlayerGui")
+local old = playerGui:FindFirstChild("BlackTreeFinderUI")
+if old then old:Destroy() end
+
+local function getRoot()
     local character = Player.Character
     return character and character:FindFirstChild("HumanoidRootPart")
 end
 
-local function IsBlack(part)
-    if not part or not part:IsA("BasePart") then
-        return false
-    end
-
-    local color = part.Color
-    return (
-        part.BrickColor.Name == "Really black"
-        or (color.R < 0.05 and color.G < 0.05 and color.B < 0.05)
-    )
+local function isBlack(part)
+    return part
+        and part:IsA("BasePart")
+        and part.BrickColor.Name == "Really black"
 end
 
-local function MatchesSize(tree)
-    if Config.SizeOption == "all" then
-        return true
-    end
+local function matchesSize(model)
+    if SizeOption == "all" then return true end
 
     local ok, size = pcall(function()
-        return tree:GetExtentsSize().Magnitude
+        return model:GetExtentsSize().Magnitude
     end)
+    if not ok then return false end
 
-    if not ok then
-        return false
-    end
-
-    if Config.SizeOption == "large" then
-        return size > 40
-    elseif Config.SizeOption == "medium" then
+    if SizeOption == "small" then return size <= 20 end
+    if SizeOption == "medium" then
         return size > 20 and size <= 40
-    elseif Config.SizeOption == "small" then
-        return size <= 20
     end
+    if SizeOption == "large" then return size > 40 end
 
     return true
 end
 
-local function FindBlackTree()
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") and MatchesSize(obj) then
-            local name = obj.Name:lower()
-            local isTree = name:find("tree") ~= nil
-            local wood = obj:FindFirstChild("WoodSection", true)
+local function findBlackTree()
+    local region = Workspace:FindFirstChild("TreeRegion")
+    if not region then return nil end
 
-            if wood and IsBlack(wood) then
-                return obj
-            end
-
-            if isTree then
-                for _, part in ipairs(obj:GetDescendants()) do
-                    if part:IsA("BasePart") and IsBlack(part) then
-                        return obj
-                    end
-                end
+    for _, model in ipairs(region:GetChildren()) do
+        if model:IsA("Model") then
+            local wood = model:FindFirstChild("WoodSection", true)
+            if isBlack(wood) and matchesSize(model) then
+                return model, wood
             end
         end
     end
@@ -80,67 +64,62 @@ local function FindBlackTree()
     return nil
 end
 
-local function TeleportToTree(tree)
-    local root = GetRoot()
-    if not root or not tree or not tree.Parent then
-        return false
-    end
+local function teleportToTree(model, wood)
+    for attempt = 1, TeleportRetries do
+        if not Running then return false end
 
-    local ok, pivot = pcall(function()
-        return tree:GetPivot()
-    end)
-
-    if not ok then
-        return false
-    end
-
-    local target = pivot.Position + Vector3.new(0, 5, 0)
-
-    for attempt = 1, Config.TeleportRetries do
-        root = GetRoot()
-        if not root then
+        local root = getRoot()
+        if not root or not model.Parent or not wood.Parent then
             return false
         end
 
-        pcall(function()
-            root.AssemblyLinearVelocity = Vector3.zero
+        -- Move beside the wood section, above the ground
+        local target = wood.Position + Vector3.new(0, 5, 0)
+
+        local ok = pcall(function()
             root.CFrame = CFrame.new(target)
         end)
 
-        task.wait(0.6)
+        task.wait(0.7)
 
-        root = GetRoot()
-        if root and (root.Position - target).Magnitude < 10 then
-            print("Teleport confirmed.")
+        root = getRoot()
+        if ok and root
+            and (root.Position - target).Magnitude < 10 then
             return true
         end
     end
 
-    warn("Teleport failed after retries.")
     return false
 end
 
-local function HopServer()
-    task.wait(Config.HopCooldown)
+local function hopServer(setStatus)
+    if not Running then return false end
+    setStatus("Searching for another server...")
 
-    local ok, result = pcall(function()
-        local url = "https://games.roblox.com/v1/games/"
-            .. game.PlaceId
-            .. "/servers/Public?sortOrder=Asc&limit=100"
+    task.wait(HopCooldown)
+    if not Running then return false end
 
+    local url = "https://games.roblox.com/v1/games/"
+        .. game.PlaceId
+        .. "/servers/Public?sortOrder=Asc&limit=100"
+
+    local ok, data = pcall(function()
         return HttpService:JSONDecode(game:HttpGet(url))
     end)
 
-    if not ok or not result or not result.data then
-        warn("Could not retrieve servers.")
+    if not ok or not data or not data.data then
+        setStatus("Hop failed: HTTP request error")
         return false
     end
 
-    for _, server in ipairs(result.data) do
+    for _, server in ipairs(data.data) do
+        if not Running then return false end
+
         if server.id ~= game.JobId
             and server.playing < server.maxPlayers then
 
-            local success = pcall(function()
+            setStatus("Teleporting to new server...")
+            local success, err = pcall(function()
                 TeleportService:TeleportToPlaceInstance(
                     game.PlaceId,
                     server.id,
@@ -150,114 +129,184 @@ local function HopServer()
 
             if success then
                 return true
+            else
+                warn("Server hop error:", err)
             end
         end
     end
 
+    setStatus("No available server found")
     return false
 end
 
--- UI
+-- GUI
 local gui = Instance.new("ScreenGui")
-gui.Name = "BlackTreeFinder"
+gui.Name = "BlackTreeFinderUI"
 gui.ResetOnSpawn = false
+gui.Parent = playerGui
 
-pcall(function()
-    gui.Parent = game:GetService("CoreGui")
-end)
+local main = Instance.new("Frame")
+main.Size = UDim2.fromOffset(320, 300)
+main.Position = UDim2.new(0.5, -160, 0.35, 0)
+main.BackgroundColor3 = Color3.fromRGB(20, 23, 32)
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Parent = gui
 
-if not gui.Parent then
-    gui.Parent = Player:WaitForChild("PlayerGui")
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = main
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(70, 110, 220)
+stroke.Thickness = 1.5
+stroke.Parent = main
+
+local function label(parent, text, pos, size, color, textSize)
+    local obj = Instance.new("TextLabel")
+    obj.Position = pos
+    obj.Size = size
+    obj.BackgroundTransparency = 1
+    obj.Text = text
+    obj.TextColor3 = color or Color3.new(1, 1, 1)
+    obj.TextSize = textSize or 14
+    obj.Font = Enum.Font.GothamMedium
+    obj.Parent = parent
+    return obj
 end
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 240, 0, 230)
-frame.Position = UDim2.new(0.05, 0, 0.3, 0)
-frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-frame.Active = true
-frame.Draggable = true
-frame.Parent = gui
+label(main, "BLACK TREE FINDER", UDim2.fromOffset(16, 10),
+    UDim2.new(1, -32, 0, 30),
+    Color3.fromRGB(130, 170, 255), 18).TextXAlignment =
+    Enum.TextXAlignment.Left
 
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 35)
-title.BackgroundTransparency = 1
-title.Text = "Black Tree Finder"
-title.TextColor3 = Color3.new(1, 1, 1)
-title.TextScaled = true
-title.Parent = frame
+label(main, "AUTO TELEPORT  •  SERVER HOP",
+    UDim2.fromOffset(16, 40), UDim2.new(1, -32, 0, 20),
+    Color3.fromRGB(160, 165, 180), 10).TextXAlignment =
+    Enum.TextXAlignment.Left
 
-local status = Instance.new("TextLabel")
-status.Position = UDim2.new(0, 5, 0, 40)
-status.Size = UDim2.new(1, -10, 0, 30)
-status.BackgroundTransparency = 1
-status.Text = "Status: Ready"
-status.TextColor3 = Color3.new(1, 1, 1)
-status.TextScaled = true
-status.Parent = frame
+local statusLabel = label(main, "● STOPPED",
+    UDim2.fromOffset(16, 68), UDim2.new(1, -32, 0, 28),
+    Color3.fromRGB(255, 190, 90), 14)
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-local function MakeButton(text, x, y, callback)
-    local button = Instance.new("TextButton")
-    button.Position = UDim2.new(0, x, 0, y)
-    button.Size = UDim2.new(0, 70, 0, 30)
-    button.Text = text
-    button.TextScaled = true
-    button.Parent = frame
-    button.MouseButton1Click:Connect(callback)
-    return button
+local function setStatus(text)
+    if statusLabel and statusLabel.Parent then
+        statusLabel.Text = "● " .. text
+    end
 end
 
-MakeButton("Small", 5, 80, function()
-    Config.SizeOption = "small"
-    status.Text = "Size: Small"
-end)
+label(main, "TREE SIZE", UDim2.fromOffset(16, 105),
+    UDim2.new(1, -32, 0, 20),
+    Color3.fromRGB(200, 205, 220), 12).TextXAlignment =
+    Enum.TextXAlignment.Left
 
-MakeButton("Medium", 85, 80, function()
-    Config.SizeOption = "medium"
-    status.Text = "Size: Medium"
-end)
+local function makeButton(text, x, y, w, h, color, callback)
+    local b = Instance.new("TextButton")
+    b.Position = UDim2.fromOffset(x, y)
+    b.Size = UDim2.fromOffset(w, h)
+    b.BackgroundColor3 = color
+    b.Text = text
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.TextSize = 12
+    b.Font = Enum.Font.GothamBold
+    b.BorderSizePixel = 0
+    b.Parent = main
 
-MakeButton("Large", 165, 80, function()
-    Config.SizeOption = "large"
-    status.Text = "Size: Large"
-end)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 7)
+    c.Parent = b
 
-MakeButton("All", 5, 120, function()
-    Config.SizeOption = "all"
-    status.Text = "Size: All"
-end)
+    b.MouseButton1Click:Connect(callback)
+    return b
+end
 
-MakeButton("Start", 85, 120, function()
-    Config.Running = true
-    status.Text = "Status: Running"
-end)
+local sizeButtons = {}
+local options = {"small", "medium", "large", "all"}
 
-MakeButton("Stop", 165, 120, function()
-    Config.Running = false
-    status.Text = "Status: Stopped"
-end)
+local function refreshSizes()
+    for name, button in pairs(sizeButtons) do
+        button.BackgroundColor3 = name == SizeOption
+            and Color3.fromRGB(65, 105, 210)
+            or Color3.fromRGB(43, 47, 60)
+    end
+end
 
--- Main loop
+for i, name in ipairs(options) do
+    sizeButtons[name] = makeButton(
+        string.upper(name),
+        16 + (i - 1) * 74, 130, 68, 30,
+        Color3.fromRGB(43, 47, 60),
+        function()
+            SizeOption = name
+            refreshSizes()
+        end
+    )
+end
+refreshSizes()
+
+local startButton = makeButton(
+    "START", 16, 185, 140, 42,
+    Color3.fromRGB(35, 160, 100),
+    function()
+        if Running then return end
+        Running = true
+        setStatus("RUNNING")
+    end
+)
+
+local stopButton = makeButton(
+    "STOP", 164, 185, 140, 42,
+    Color3.fromRGB(190, 60, 70),
+    function()
+        Running = false
+        setStatus("STOPPED")
+    end
+)
+
+label(main, "Starts stopped • Hop only when no tree is found",
+    UDim2.fromOffset(12, 244), UDim2.new(1, -24, 0, 30),
+    Color3.fromRGB(145, 150, 165), 10)
+
+-- Main loop: no teleport or hop before START
 task.spawn(function()
-    while task.wait(Config.CheckInterval) do
-        if not Config.Running then
+    while gui.Parent do
+        task.wait(CheckInterval)
+
+        if not Running or Busy then
             continue
         end
 
-        local tree = FindBlackTree()
+        Busy = true
 
-        if tree then
-            status.Text = "Teleporting..."
-            local arrived = TeleportToTree(tree)
+        local ok, err = pcall(function()
+            local model, wood = findBlackTree()
 
-            if arrived then
-                status.Text = "Reached tree"
-                task.wait(2)
+            if model and wood then
+                setStatus("TREE FOUND - TELEPORTING")
+                local arrived = teleportToTree(model, wood)
+
+                if arrived then
+                    setStatus("TREE REACHED")
+                    task.wait(2)
+                else
+                    setStatus("TELEPORT RETRY FAILED")
+                    task.wait(1)
+                end
             else
-                status.Text = "Retrying..."
+                setStatus("NO TREE - HOPPING")
+                hopServer(setStatus)
             end
-        else
-            status.Text = "No tree - hopping"
-            HopServer()
+        end)
+
+        if not ok then
+            warn("Black Tree Finder error:", err)
+            setStatus("ERROR - CHECK CONSOLE")
+            task.wait(2)
         end
+
+        Busy = false
     end
 end)
+```
