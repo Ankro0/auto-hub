@@ -17,7 +17,7 @@ local Busy = false
 local CheckInterval = 0.3
 local TeleportRetries = 3
 local RegionWait = 5      -- seconds to wait for TreeRegion to load
-local SearchWindow = 1.5    -- seconds to keep looking for the tree after it loads
+local SearchWindow = 2    -- seconds to keep looking for the tree after it loads
 local MaxServerPlayers = 4  -- only hop to servers with this many players or fewer
 local MaxPages = 8       -- server list pages to scan
 local STATE_FILE = "BlackTreeFinder.json"
@@ -81,10 +81,13 @@ local function getRoot()
     return character and character:FindFirstChild("HumanoidRootPart")
 end
 
+local lastWoodCount = 0
+
 local function isBlack(part)
-    return part ~= nil
-        and part:IsA("BasePart")
-        and part.BrickColor.Name == "Really black"
+    if not (part and part:IsA("BasePart")) then return false end
+    if part.BrickColor.Name == "Really black" then return true end
+    local c = part.Color
+    return c.R < 0.12 and c.G < 0.12 and c.B < 0.12
 end
 
 local function matchesSize(model)
@@ -106,16 +109,24 @@ local function findBlackTree()
     local region = Workspace:FindFirstChild("TreeRegion")
     if not region then return nil end
 
-    for _, model in ipairs(region:GetChildren()) do
-        if model:IsA("Model") then
-            local wood = model:FindFirstChild("WoodSection", true)
-            if isBlack(wood) and matchesSize(model) then
-                return model, wood
+    local woods = 0
+    local foundModel, foundWood
+
+    -- check EVERY WoodSection (a tree can have many), at any depth
+    for _, obj in ipairs(region:GetDescendants()) do
+        if obj.Name == "WoodSection" and obj:IsA("BasePart") then
+            woods = woods + 1
+            if not foundModel and isBlack(obj) then
+                local model = obj:FindFirstAncestorOfClass("Model") or obj.Parent
+                if model and matchesSize(model) then
+                    foundModel, foundWood = model, obj
+                end
             end
         end
     end
 
-    return nil
+    lastWoodCount = woods
+    return foundModel, foundWood
 end
 
 -- Waits for the map to load, then looks for the tree for a few seconds
@@ -130,7 +141,8 @@ local function searchTree()
         local model, wood = findBlackTree()
         if model then return model, wood end
         task.wait(0.25)
-    until os.clock() - t0 >= SearchWindow
+    local e = os.clock() - t0
+    until (e >= SearchWindow and lastWoodCount > 0) or e >= SearchWindow + 4
 
     return nil
 end
@@ -451,7 +463,8 @@ local function step()
         end
         setStatus("TELEPORT FAILED - HOPPING")
     else
-        setStatus("NO TREE - HOPPING")
+        setStatus("NO TREE (" .. lastWoodCount .. " woods) - HOPPING")
+        print("[BlackTree] no black tree, woods scanned:", lastWoodCount)
     end
 
     hopNext(setStatus)
