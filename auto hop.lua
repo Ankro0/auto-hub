@@ -1,6 +1,7 @@
 -- Black Tree Finder | GUI (fixed)
 -- Press START once: scans servers, joins them one by one, stops when it reaches a black tree.
 
+print("[BlackTree] script started")
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -269,10 +270,11 @@ end
 local gui = Instance.new("ScreenGui")
 gui.Name = "BlackTreeFinderUI"
 gui.ResetOnSpawn = false
-local parented = pcall(function()
-    gui.Parent = (gethui and gethui()) or playerGui
-end)
-if not parented or not gui.Parent then gui.Parent = playerGui end
+gui.DisplayOrder = 999
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = playerGui
+print("[BlackTree] GUI created")
 
 local main = Instance.new("Frame")
 main.Size = UDim2.fromOffset(320, 300)
